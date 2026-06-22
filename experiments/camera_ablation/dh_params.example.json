@@ -1,0 +1,23 @@
+{
+  "_comment": "把这里换成你机械臂的真实 DH 参数。每个关节一项，顺序从基座到末端。",
+  "_fields": {
+    "convention": "standard 或 modified(Craig)，看你的 DH 表是哪种",
+    "angle_unit": "rad 或 deg —— 你 states.csv 里关节角和下面 theta_offset 的单位",
+    "joints[].a": "连杆长度 a_i (米)",
+    "joints[].alpha": "连杆扭转 alpha_i (与 angle_unit 一致)",
+    "joints[].d": "连杆偏距 d_i (米)",
+    "joints[].theta_offset": "关节零位偏置 (与 angle_unit 一致)，没有就填 0",
+    "base": "可选 4x4 基座变换；tool 可选 4x4 末端工具变换",
+    "_note": "示例是一个占位的 6 轴臂，数值是假的，务必替换"
+  },
+  "convention": "standard",
+  "angle_unit": "rad",
+  "joints": [
+    {"a": 0.0,    "alpha": 1.5708,  "d": 0.1625, "theta_offset": 0.0},
+    {"a": -0.425, "alpha": 0.0,     "d": 0.0,    "theta_offset": 0.0},
+    {"a": -0.392, "alpha": 0.0,     "d": 0.0,    "theta_offset": 0.0},
+    {"a": 0.0,    "alpha": 1.5708,  "d": 0.1333, "theta_offset": 0.0},
+    {"a": 0.0,    "alpha": -1.5708, "d": 0.0997, "theta_offset": 0.0},
+    {"a": 0.0,    "alpha": 0.0,     "d": 0.0996, "theta_offset": 0.0}
+  ]
+}

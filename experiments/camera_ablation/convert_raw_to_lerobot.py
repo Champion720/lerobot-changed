@@ -6,6 +6,12 @@ This is the bridge between your Target1.1 capture system and LeRobot. You record
 demonstration with your own setup, dump it to the simple folder format below, and this
 script packs it into the standard LeRobotDataset that `lerobot-train` consumes.
 
+Current experiment definition:
+  Condition A = camera stream displayed on the phone client; phone controls the end effector.
+  Condition B = camera stream displayed on the PC client; phone controls the end effector.
+Both conditions should normally include video.mp4. The --no_camera flag is kept only for
+legacy/debug datasets.
+
 DATA SEMANTICS (agreed for this project):
   action = [dx, dy, dz, dyaw, dpitch, droll]   end-effector DELTA sent by the phone (6D)
   state  = [joint angles j1..jN] (+ end-effector pose [x,y,z,yaw,pitch,roll] via FK)
@@ -19,23 +25,23 @@ EXPECTED RAW FORMAT  (one folder per recorded episode):
         episode_000/
             states.csv     # one row per frame: joint angles j1..jN (what the robot reports)
             actions.csv    # one row per frame: the 6D end-effector delta the phone sent
-            video.mp4       # camera recording (Condition B only; omit for Condition A)
+            video.mp4       # camera recording (current A/B experiment: present in both conditions)
         episode_001/ ...
 
   * states.csv and actions.csv must have the SAME number of rows (= frames). Any
     'timestamp'/'time'/'t'/'frame'/'index' column is dropped automatically.
-  * For Condition B, video.mp4 frame count should match; frames are matched by index.
+  * When video.mp4 is present, its frame count should match; frames are matched by index.
 
 USAGE (run from the inner lerobot-main project dir):
-    # Condition B (camera) with FK-augmented state
+    # Condition A (mobile display) with FK-augmented state and camera video
     uv run --extra training python experiments/camera_ablation/convert_raw_to_lerobot.py \
-        --raw_dir raw/cond_b --repo_id local/cond_b_camera --fps 30 --task "pick and place" \
+        --raw_dir raw/cond_a_mobile --repo_id local/cond_a_mobile --fps 30 --task "pick and place" \
         --dh_config experiments/camera_ablation/dh_params.json --resize 480x640
 
-    # Condition A (no camera)
+    # Condition B (PC display) with FK-augmented state and camera video
     uv run --extra training python experiments/camera_ablation/convert_raw_to_lerobot.py \
-        --raw_dir raw/cond_a --repo_id local/cond_a_phone --fps 30 --task "pick and place" \
-        --dh_config experiments/camera_ablation/dh_params.json --no_camera
+        --raw_dir raw/cond_b_pc --repo_id local/cond_b_pc --fps 30 --task "pick and place" \
+        --dh_config experiments/camera_ablation/dh_params.json --resize 480x640
 """
 
 import argparse
@@ -112,7 +118,11 @@ def main() -> None:
     parser.add_argument("--task", required=True, help="Natural-language task description.")
     parser.add_argument("--dh_config", default=None,
                         help="DH params JSON. If set, state = [joint angles + FK end-effector pose].")
-    parser.add_argument("--no_camera", action="store_true", help="Condition A: episodes have no video.mp4.")
+    parser.add_argument(
+        "--no_camera",
+        action="store_true",
+        help="Legacy/debug mode: episodes have no video.mp4. Current A/B experiment should not use this.",
+    )
     parser.add_argument("--resize", default=None, help="Force camera frames to HxW, e.g. 480x640.")
     parser.add_argument("--output_dir", default=None, help="Where to write the dataset.")
     parser.add_argument("--states_name", default="states.csv")

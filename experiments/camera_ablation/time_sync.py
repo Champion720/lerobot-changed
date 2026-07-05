@@ -9,7 +9,7 @@ INPUT  (one folder per episode, each stream timestamped in SECONDS):
     <raw_ts>/episode_000/
         robot.csv        # timestamp, j1..jN              (robot joint angles)
         phone.csv        # timestamp, dx,dy,dz,dyaw,dpitch,droll   (phone end-effector delta)
-        video.mp4        # camera recording (Condition B only)
+        video.mp4        # camera recording (current A/B experiment: present in both conditions)
         video_meta.json  # optional {"start_ts": <s>, "fps": <video_fps>}; default start=0, fps=mp4 fps
 
 OUTPUT (ready for the converter):

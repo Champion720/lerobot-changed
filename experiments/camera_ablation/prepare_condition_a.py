@@ -1,10 +1,16 @@
 #!/usr/bin/env python
-"""Build the Condition-A (no-camera) dataset for the camera-ablation experiment.
+"""Legacy helper: build a no-camera dataset copy for smoke testing only.
 
-The experiment compares a robot-manipulation policy trained WITH vs WITHOUT the camera,
-to quantify how much the camera improves performance. Condition B uses the original
-dataset (state + camera images). Condition A must be the *same* data with every camera
-(video) feature stripped out, so the only difference between the two policies is vision.
+The current real experiment no longer compares WITH vs WITHOUT camera. It compares two
+display conditions:
+  A = camera stream displayed on the phone client
+  B = camera stream displayed on the PC client
+Both real datasets should include camera video.
+
+This script remains useful only for validating the training pipeline on a public dataset:
+it strips video features to create a small no-camera copy, then run_pipeline.ps1 can train
+both the full and stripped copies as a quick smoke test. Do not use this as the real
+Condition-A preprocessing step.
 
 This script loads a source LeRobotDataset, auto-detects its video/image columns, and
 writes a copy with those columns removed via `modify_features`. Because no video columns
@@ -61,7 +67,7 @@ def main() -> None:
     print(f"Loading source dataset: {args.repo_id}")
     ds = LeRobotDataset(args.repo_id, root=args.root, video_backend=args.video_backend)
 
-    # Camera features = the video keys. Removing them yields the no-camera (Condition A) dataset.
+    # Camera features = the video keys. Removing them yields the legacy no-camera smoke-test dataset.
     camera_keys = list(ds.meta.video_keys)
     if not camera_keys:
         raise SystemExit(
@@ -81,7 +87,7 @@ def main() -> None:
     )
 
     print("\nDone.")
-    print(f"  Condition A (no camera) dataset: {out_repo_id}")
+    print(f"  Legacy no-camera smoke-test dataset: {out_repo_id}")
     print(f"  Root: {new_ds.root}")
     print(f"  Remaining features: {list(new_ds.meta.features)}")
     print(f"  Episodes: {new_ds.meta.total_episodes}, Frames: {new_ds.meta.total_frames}")

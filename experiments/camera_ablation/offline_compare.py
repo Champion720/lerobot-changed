@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Offline evaluation for the camera-ablation experiment (Condition A vs Condition B).
+"""Offline evaluation for the display-condition experiment (Condition A vs Condition B).
 
 This implements the *offline* arm of the analysis plan (no physical robot / no simulator
 needed): for each held-out frame, run the trained ACT policy and measure the L1 distance
@@ -7,19 +7,20 @@ between its predicted action chunk and the expert (ground-truth) action chunk --
 close the learned policy stays to the demonstrations. This is the "imitation-learning MSE"
 metric from the experiment plan, here as masked L1 in the policy's normalized action space.
 
-We compute a per-episode mean error for each condition, treat episodes as paired samples
-(Condition A and B share the same episode indices), and run a paired t-test
-(scipy.stats.ttest_rel) so the comparison comes with a p-value.
+We compute a per-episode mean error for each condition and run a statistical test so the
+comparison comes with a p-value. Use --paired only when the two conditions share matched
+episode indices; real A/B recordings are usually independent samples.
 
-  Condition A (no camera): policy trained on the *_nocam dataset, state-only ACT.
-  Condition B (camera):    policy trained on the full dataset, state+image ACT.
+  Condition A: mobile display. The camera stream is shown on the phone client; phone controls the end effector.
+  Condition B: PC display. The camera stream is shown on the PC client; phone controls the end effector.
+  Both datasets normally contain state + action + camera video, and both policies use state+image ACT inputs.
 
 Usage (run from the inner lerobot-main project dir, after both models are trained):
     uv run --extra training python experiments/camera_ablation/offline_compare.py \
-        --ckpt_a outputs/train/cond_a/checkpoints/last/pretrained_model \
-        --repo_a svla_so101_pickplace_nocam \
-        --ckpt_b outputs/train/cond_b/checkpoints/last/pretrained_model \
-        --repo_b lerobot/svla_so101_pickplace \
+        --ckpt_a outputs/train/cond_a_mobile/checkpoints/last/pretrained_model \
+        --repo_a local/cond_a_mobile \
+        --ckpt_b outputs/train/cond_b_pc/checkpoints/last/pretrained_model \
+        --repo_b local/cond_b_pc \
         --test_frac 0.2 --device cuda --video_backend pyav
 
 NOTE: this script could not be executed in the authoring environment (needs the trained
@@ -107,11 +108,11 @@ def _per_episode_errors(ckpt: str, repo_id: str, root: str | None, test_frac: fl
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ckpt_a", required=True, help="Condition A (no camera) pretrained_model dir.")
-    parser.add_argument("--repo_a", required=True, help="Condition A dataset (the *_nocam copy).")
+    parser.add_argument("--ckpt_a", required=True, help="Condition A (mobile display) pretrained_model dir.")
+    parser.add_argument("--repo_a", required=True, help="Condition A dataset.")
     parser.add_argument("--root_a", default=None)
-    parser.add_argument("--ckpt_b", required=True, help="Condition B (camera) pretrained_model dir.")
-    parser.add_argument("--repo_b", required=True, help="Condition B dataset (the full dataset).")
+    parser.add_argument("--ckpt_b", required=True, help="Condition B (PC display) pretrained_model dir.")
+    parser.add_argument("--repo_b", required=True, help="Condition B dataset.")
     parser.add_argument("--root_b", default=None)
     parser.add_argument("--test_frac", type=float, default=0.2)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -126,10 +127,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    print("Condition A (no camera):")
+    print("Condition A (mobile display):")
     err_a = _per_episode_errors(args.ckpt_a, args.repo_a, args.root_a, args.test_frac,
                                 args.device, args.video_backend, args.batch_size)
-    print("Condition B (camera):")
+    print("Condition B (PC display):")
     err_b = _per_episode_errors(args.ckpt_b, args.repo_b, args.root_b, args.test_frac,
                                 args.device, args.video_backend, args.batch_size)
 
@@ -151,8 +152,8 @@ def main() -> None:
     print(f"  Test episodes: A={len(a)}, B={len(b)}")
 
     print("\n---- Summary (lower error = closer to expert demonstrations) ----")
-    print(f"  Condition A (no camera) mean L1: {a.mean():.5f}  (std {a.std(ddof=1):.5f})")
-    print(f"  Condition B (camera)    mean L1: {b.mean():.5f}  (std {b.std(ddof=1):.5f})")
+    print(f"  Condition A (mobile display) mean L1: {a.mean():.5f}  (std {a.std(ddof=1):.5f})")
+    print(f"  Condition B (PC display)     mean L1: {b.mean():.5f}  (std {b.std(ddof=1):.5f})")
     print(f"  Difference (A - B): {a.mean() - b.mean():.5f}  "
           f"({'B better' if b.mean() < a.mean() else 'A better'})")
 
@@ -165,7 +166,7 @@ def main() -> None:
             t_stat, p_val = stats.ttest_ind(a, b, equal_var=False)
         print(f"\n  {test_name}: t = {t_stat:.3f}, p = {p_val:.4g}")
         print(f"  {'Significant (p < 0.05)' if p_val < 0.05 else 'Not significant (p >= 0.05)'}: "
-              "the camera condition "
+              "the display condition "
               f"{'measurably changes' if p_val < 0.05 else 'does not measurably change'} "
               "how close the policy stays to the expert.")
     except ImportError:

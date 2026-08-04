@@ -25,6 +25,14 @@
 
 🤗 Comprehensive support for the open-source ecosystem to democratize physical AI.
 
+## 本仓库的论文实验扩展
+
+本工作区在 LeRobot 上增加了“同一机械臂摄像头视频在手机端显示与电脑端显示”的 A/B 遥操作
+实验框架。实验设计、尚需提供的设备资料、每个参数的准确写入位置、DataChannel 协议、采集目录、
+同步/转换/训练流程以及当前未完成项统一维护在
+[实验 README](experiments/camera_ablation/README.md)。该文件是这项实验的唯一主说明；开始实机
+接入或修改参数前请先阅读其中“完成实机框架还需要提供什么”和“参数写入总表”。
+
 ## Quick Start
 
 LeRobot can be installed directly from PyPI.

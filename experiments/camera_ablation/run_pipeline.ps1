@@ -7,7 +7,7 @@
 
 $ErrorActionPreference = "Stop"
 
-$env:Path = "C:\Users\19034\.local\bin;$env:Path"
+$env:Path = "$HOME\.local\bin;$env:Path"
 $env:HF_HUB_DISABLE_XET = "1"
 
 $RepoFull  = "lerobot/svla_so101_pickplace"
@@ -34,11 +34,13 @@ uv run --extra training lerobot-train --dataset.repo_id=$RepoNoCam `
   --batch_size=$Batch --steps=$Steps --eval_freq=0 --num_workers=0 --wandb.enable=false
 if (-not $?) { throw "Step 3 (train A) failed" }
 
-Write-Host "=== [4/4] Legacy smoke test: offline comparison + paired t-test ===" -ForegroundColor Cyan
+Write-Host "=== [4/4] Legacy smoke test: explicit single-checkpoint diagnostic ===" -ForegroundColor Cyan
 uv run --extra training python experiments/camera_ablation/offline_compare.py `
+  --diagnostic_single_checkpoint `
   --ckpt_a outputs/train/cond_a/checkpoints/last/pretrained_model --repo_a $RepoNoCam `
   --ckpt_b outputs/train/cond_b/checkpoints/last/pretrained_model --repo_b $RepoFull `
-  --test_frac 0.2 --device cuda --paired
+  --test_frac 0.2 --paired --device cuda --video_backend pyav `
+  --out outputs/offline_action_errors_diagnostic.csv
 if (-not $?) { throw "Step 4 (compare) failed" }
 
 Write-Host "=== Pipeline finished ===" -ForegroundColor Green

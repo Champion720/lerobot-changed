@@ -1,0 +1,5 @@
+{
+  "0": "outputs/train/cond_a_mobile/seed_0/checkpoints/last/pretrained_model",
+  "1": "outputs/train/cond_a_mobile/seed_1/checkpoints/last/pretrained_model",
+  "2": "outputs/train/cond_a_mobile/seed_2/checkpoints/last/pretrained_model"
+}

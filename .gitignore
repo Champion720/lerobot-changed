@@ -165,6 +165,18 @@ wandb/
 # Data folders
 data/
 outputs/
+/raw/
+/raw_ts/
+
+# Local camera-display experiment configuration and participant records
+experiments/camera_ablation/dh_params.json
+experiments/camera_ablation/experiment_config.json
+experiments/camera_ablation/experiment_manifest.csv
+experiments/camera_ablation/robot_bridge_config.json
+experiments/camera_ablation/checkpoints_a.json
+experiments/camera_ablation/checkpoints_b.json
+experiments/camera_ablation/labels_*.csv
+/labels_*.csv
 
 # Translations
 *.mo

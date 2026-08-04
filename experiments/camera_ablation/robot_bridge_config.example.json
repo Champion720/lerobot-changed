@@ -1,0 +1,55 @@
+{
+  "_warning": "DRY-RUN ONLY. These are demonstration limits, not limits for a real robot.",
+  "_experimenter_todo": [
+    "Implement RobotDriver with the vendor SDK and a verified physical emergency stop.",
+    "Provide the real FK/IK model. LeRobot RobotKinematics can be wrapped with LeRobotKinematicsAdapter.",
+    "Replace workspace and joint limits using the robot manual, calibration, tool length, and test results.",
+    "Verify joint order, zero offsets, signs, and radians at the driver boundary.",
+    "Set max_command_age_ms/max_future_skew_ms only after the phone and robot clocks are synchronized.",
+    "Run RobotBridge.check_watchdog() from an independent periodic task on real hardware.",
+    "Make emergency_stop thread-safe and independent so it cancels an in-flight send.",
+    "Make send_joint_positions enforce JointMotionConstraints in the controller, including velocity, acceleration, and deadline."
+  ],
+  "mode": "dry_run",
+  "allow_hardware": false,
+  "joint_names": [
+    "joint_1",
+    "joint_2",
+    "joint_3",
+    "joint_4",
+    "joint_5",
+    "joint_6"
+  ],
+  "initial_joint_positions_rad": [0.0, 0.0, 0.2, 0.0, 0.0, 0.0],
+  "driver": {
+    "type": "dry_run_mock",
+    "_hardware_todo": "Replace by an explicitly constructed RobotDriver; no real-driver factory is bundled."
+  },
+  "kinematics": {
+    "provider": "dry_run_cartesian_mock",
+    "_hardware_todo": "Replace by the selected robot's URDF/DH/vendor FK+IK implementation."
+  },
+  "safety": {
+    "_warning": "Placeholder envelope for the Cartesian dry-run mock only.",
+    "workspace_min_m": [-0.5, -0.5, 0.0],
+    "workspace_max_m": [0.5, 0.5, 0.8],
+    "joint_min_rad": [-0.5, -0.5, 0.0, -3.14159, -3.14159, -3.14159],
+    "joint_max_rad": [0.5, 0.5, 0.8, 3.14159, 3.14159, 3.14159],
+    "max_translation_step_m": 0.01,
+    "max_rotation_step_rad": 0.1,
+    "max_joint_step_rad": 0.1,
+    "max_translation_velocity_m_s": 0.5,
+    "max_rotation_velocity_rad_s": 2.0,
+    "max_joint_velocity_rad_s": 2.0,
+    "max_joint_acceleration_rad_s2": 5.0,
+    "max_ik_position_error_m": 0.0001,
+    "max_ik_orientation_error_rad": 0.001,
+    "driver_command_timeout_ms": 100,
+    "translation_frame": "base",
+    "rotation_frame": "tool",
+    "require_strictly_increasing_t": true,
+    "max_command_age_ms": 1000,
+    "max_future_skew_ms": 50,
+    "max_receive_interval_ms": 250
+  }
+}

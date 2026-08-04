@@ -1,7 +1,7 @@
-episode,success,failure_type,difficulty
-0,1,,simple
-1,1,,simple
-2,1,,medium
-3,0,grasp,medium
-4,0,collision,hard
-5,0,timeout,hard
+episode,success,failure_type,pair_id,participant_id,task_id,difficulty,trial_index,condition_order,placement_error_m,completion_time_s,video_latency_ms,dropped_frames
+0,1,,P01_pick_simple_01,P01,pick_place_simple,simple,1,1,0.003,18.4,85,0
+1,1,,P01_pick_simple_02,P01,pick_place_simple,simple,2,1,0.004,19.1,82,0
+2,1,,P01_pick_medium_01,P01,pick_place_medium,medium,1,1,0.004,31.2,90,1
+3,0,grasp_failure,P01_pick_medium_02,P01,pick_place_medium,medium,2,1,,,88,0
+4,0,collision,P01_pick_hard_01,P01,pick_place_hard,hard,1,1,,,92,2
+5,0,timeout,P01_pick_hard_02,P01,pick_place_hard,hard,2,1,,60.0,89,1

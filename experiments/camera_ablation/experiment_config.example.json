@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "study": {
+    "name": "mobile_vs_pc_display",
+    "paired_within_participant": true,
+    "conditions": {
+      "A_mobile": {
+        "display": "mobile",
+        "camera_present": true,
+        "control": "phone_imu"
+      },
+      "B_pc": {
+        "display": "pc",
+        "camera_present": true,
+        "control": "phone_imu"
+      }
+    },
+    "counterbalance_condition_order": true
+  },
+  "capture": {
+    "target_fps": 30,
+    "position_unit": "m",
+    "angle_unit": "rad",
+    "joint_names": [
+      "joint_1",
+      "joint_2",
+      "joint_3",
+      "joint_4",
+      "joint_5",
+      "joint_6"
+    ],
+    "required_files": [
+      "robot.csv",
+      "phone.csv",
+      "applied_actions.csv",
+      "video.mp4",
+      "video_meta.json",
+      "frame_timestamps.csv"
+    ],
+    "max_clock_uncertainty_s": null,
+    "record_video_latency_ms": true,
+    "record_dropped_frames": true
+  },
+  "success_definition": {
+    "placement_error_threshold_m": null,
+    "timeout_s": null,
+    "collision_is_failure": true,
+    "grasp_failure_is_failure": true,
+    "user_abort_is_failure": true,
+    "not_success_is_failure": true,
+    "allowed_failure_types": [
+      "collision",
+      "grasp_failure",
+      "timeout",
+      "placement_error",
+      "user_abort",
+      "other"
+    ]
+  },
+  "tasks": [
+    {
+      "task_id": "replace_with_simple_task",
+      "difficulty": "simple"
+    },
+    {
+      "task_id": "replace_with_medium_task",
+      "difficulty": "medium"
+    },
+    {
+      "task_id": "replace_with_hard_task",
+      "difficulty": "hard"
+    }
+  ],
+  "training": {
+    "random_seeds": [
+      0,
+      1,
+      2
+    ],
+    "split_seed": 20260728,
+    "train_fraction": 0.7,
+    "validation_fraction": 0.15,
+    "test_fraction": 0.15
+  },
+  "analysis": {
+    "planned_participants": null,
+    "minimum_participants_per_split": 2,
+    "note": "Replace planned_participants using a preregistered power/sample-size analysis; two per split is only a software floor, not evidence of adequate power."
+  }
+}

@@ -12,12 +12,21 @@
   },
   "convention": "standard",
   "angle_unit": "rad",
+  "length_unit": "m",
+  "joint_names": [
+    "joint_1",
+    "joint_2",
+    "joint_3",
+    "joint_4",
+    "joint_5",
+    "joint_6"
+  ],
   "joints": [
-    {"a": 0.0,    "alpha": 1.5708,  "d": 0.1625, "theta_offset": 0.0},
-    {"a": -0.425, "alpha": 0.0,     "d": 0.0,    "theta_offset": 0.0},
-    {"a": -0.392, "alpha": 0.0,     "d": 0.0,    "theta_offset": 0.0},
-    {"a": 0.0,    "alpha": 1.5708,  "d": 0.1333, "theta_offset": 0.0},
-    {"a": 0.0,    "alpha": -1.5708, "d": 0.0997, "theta_offset": 0.0},
-    {"a": 0.0,    "alpha": 0.0,     "d": 0.0996, "theta_offset": 0.0}
+    {"a": 0.0,    "alpha": 1.5708,  "d": 0.1625, "theta_offset": 0.0, "direction": 1},
+    {"a": -0.425, "alpha": 0.0,     "d": 0.0,    "theta_offset": 0.0, "direction": 1},
+    {"a": -0.392, "alpha": 0.0,     "d": 0.0,    "theta_offset": 0.0, "direction": 1},
+    {"a": 0.0,    "alpha": 1.5708,  "d": 0.1333, "theta_offset": 0.0, "direction": 1},
+    {"a": 0.0,    "alpha": -1.5708, "d": 0.0997, "theta_offset": 0.0, "direction": 1},
+    {"a": 0.0,    "alpha": 0.0,     "d": 0.0996, "theta_offset": 0.0, "direction": 1}
   ]
 }

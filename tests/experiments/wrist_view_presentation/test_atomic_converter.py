@@ -4,20 +4,30 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
 import pyarrow.parquet as pq
 import pytest
 
-from experiments.camera_ablation import convert_raw_to_lerobot as converter
+from experiments.wrist_view_presentation import convert_raw_to_lerobot as converter, time_sync
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 
 def _write_raw_episode(raw_dir: Path) -> None:
     episode = raw_dir / "episode_000"
     episode.mkdir(parents=True)
-    (episode / "states.csv").write_text("joint_1\n0.0\n", encoding="utf-8")
+    frame_count = 10
+    states = "joint_1\n" + "".join(f"{index / 100}\n" for index in range(frame_count))
+    actions = "dx,dy,dz,dyaw,dpitch,droll\n" + "0,0,0,0,0,0\n" * frame_count
+    (episode / "states.csv").write_text(states, encoding="utf-8")
     (episode / "actions.csv").write_text(
-        "dx,dy,dz,dyaw,dpitch,droll\n0,0,0,0,0,0\n",
+        actions,
         encoding="utf-8",
+    )
+    time_sync._write_video(
+        episode / "video.mp4",
+        np.zeros((frame_count, 64, 64, 3), dtype=np.uint8),
+        np.arange(frame_count),
+        fps=30,
     )
 
 
@@ -35,7 +45,6 @@ def _run_main(monkeypatch: pytest.MonkeyPatch, raw_dir: Path, target_root: Path)
             "30",
             "--task",
             "atomic conversion test",
-            "--no_camera",
             "--output_dir",
             str(target_root),
         ],
@@ -79,9 +88,9 @@ def test_real_dataset_remains_readable_after_atomic_publish(
     info = json.loads((target_root / "meta" / "info.json").read_text(encoding="utf-8"))
     data_files = list((target_root / "data").rglob("*.parquet"))
     assert info["total_episodes"] == 1
-    assert info["total_frames"] == 1
+    assert info["total_frames"] == 10
     assert len(data_files) == 1
-    assert pq.read_table(data_files[0]).num_rows == 1
+    assert pq.read_table(data_files[0]).num_rows == 10
     assert list(tmp_path.glob(f".{target_root.name}.staging-*")) == []
 
 
@@ -117,7 +126,7 @@ def test_converter_publishes_only_finalized_sibling_staging(
     assert len(created) == 1
     assert created[0].finalize_calls == 1
     assert (target_root / "FINALIZED").read_text(encoding="utf-8") == "yes"
-    assert (target_root / "episode.saved").read_text(encoding="utf-8") == "1"
+    assert (target_root / "episode.saved").read_text(encoding="utf-8") == "10"
     assert list(tmp_path.glob(f".{target_root.name}.staging-*")) == []
 
 
@@ -243,7 +252,7 @@ def test_converter_csv_aba_on_original_cannot_affect_snapshot_conversion(
     assert all(path != source_actions for path in injected_paths)
     assert source_actions.read_bytes() == original_bytes
     assert len(created) == 1
-    assert len(created[0].frames) == 1
+    assert len(created[0].frames) == 10
     assert created[0].frames[0]["action"].tolist() == [0.0] * 6
     provenance = json.loads((target_root / "meta" / "source_fingerprints.json").read_text(encoding="utf-8"))
     assert provenance["schema_version"] == 2

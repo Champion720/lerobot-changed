@@ -150,7 +150,7 @@ class VectorSchema:
 
 
 CARTESIAN_DELTA_ACTION_SCHEMA = VectorSchema(
-    schema_id="camera_ablation.cartesian_delta_6d",
+    schema_id="wrist_view_presentation.cartesian_delta_6d",
     version=1,
     fields=(
         SignalField("dx", "m"),
@@ -609,8 +609,8 @@ class VideoEpisodeTiming:
             ),
         )
         display = _identifier(self.display, "display", VideoClockContractError)
-        if display not in {"mobile", "pc"}:
-            raise VideoClockContractError("display must be 'mobile' or 'pc'")
+        if display not in {"mobile", "desktop"}:
+            raise VideoClockContractError("display must be 'mobile' or 'desktop'")
         object.__setattr__(self, "display", display)
         if not isinstance(self.clock_contract, VideoClockContract):
             raise VideoClockContractError("clock_contract must be a VideoClockContract")

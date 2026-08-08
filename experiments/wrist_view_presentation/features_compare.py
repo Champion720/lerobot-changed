@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Compare Condition A_mobile and B_pc feature tables at the participant level.
+"""Compare the two wrist-view presentation conditions at the participant level.
 
 Episodes are first averaged within participant/seed and then within participant, so repeat
 trials are never treated as independent samples. The confirmed within-participant design is
@@ -402,7 +402,10 @@ def participant_success_comparison(
     paired: bool = True,
 ) -> dict[str, object]:
     """Compare participant success proportions under the selected design."""
-    for condition, dataframe in (("A_mobile", df_a), ("B_pc", df_b)):
+    for condition, dataframe in (
+        ("A_mobile_colocated", df_a),
+        ("B_desktop_separated", df_b),
+    ):
         _binary_success(dataframe["success"], condition)
 
     def participant_rates(dataframe: pd.DataFrame) -> pd.DataFrame:
@@ -734,8 +737,16 @@ def _infer_subject_key(df_a: pd.DataFrame, df_b: pd.DataFrame) -> str | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--features_a", required=True, help="Condition A feature CSV.")
-    parser.add_argument("--features_b", required=True, help="Condition B feature CSV.")
+    parser.add_argument(
+        "--features_a",
+        required=True,
+        help="A_mobile_colocated feature CSV.",
+    )
+    parser.add_argument(
+        "--features_b",
+        required=True,
+        help="B_desktop_separated feature CSV.",
+    )
     parser.add_argument("--out", default="outputs/comparison.csv")
     parser.add_argument("--excel", default=None)
     parser.add_argument(
@@ -766,8 +777,8 @@ def main() -> None:
     df_a = pd.read_csv(args.features_a)
     df_b = pd.read_csv(args.features_b)
     try:
-        validate_condition_table(df_a, "A_mobile")
-        validate_condition_table(df_b, "B_pc")
+        validate_condition_table(df_a, "A_mobile_colocated")
+        validate_condition_table(df_b, "B_desktop_separated")
     except ValueError as exc:
         raise SystemExit(f"Invalid condition input: {exc}") from exc
 
@@ -879,13 +890,16 @@ def main() -> None:
     write_json(
         metadata_path,
         {
-            "artifact_type": "camera_ablation_feature_comparison",
+            "artifact_type": "wrist_view_presentation_feature_comparison",
             "arguments": vars(args),
             "input_hashes": fingerprint_inputs(
                 {"features_a": args.features_a, "features_b": args.features_b}
             ),
             "output_hashes": {name: fingerprint_path(path) for name, path in output_paths.items()},
-            "conditions": {"A": "A_mobile", "B": "B_pc"},
+            "conditions": {
+                "A": "A_mobile_colocated",
+                "B": "B_desktop_separated",
+            },
             "continuous_analysis_unit": "participant_id",
             "episode_rows": {"A": len(df_a), "B": len(df_b)},
             "participants": {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Preflight validation for the fixed mobile-vs-PC display experiment.
+"""Preflight validation for the fixed wrist-view presentation experiment.
 
 Run this before a pilot and again before model training. It validates the protocol
 configuration, paired episode manifest, and (when supplied) the raw episode directory.
@@ -29,7 +29,7 @@ from acquisition_interfaces import (  # noqa: E402
     FORMAL_VIDEO_ARTIFACT_TYPE,
     FORMAL_VIDEO_WRITER_CAPABILITY,
 )
-from make_episode_splits import CONDITIONS, validate_manifest  # noqa: E402
+from make_episode_splits import CONDITION_SPECS, CONDITIONS, validate_manifest  # noqa: E402
 from time_sync import _count_decodable_frames, _read_ts_csv, _video_timestamps  # noqa: E402
 
 VIDEO_ARTIFACT_TYPE = FORMAL_VIDEO_ARTIFACT_TYPE
@@ -41,6 +41,19 @@ FRAME_TIMESTAMP_COLUMNS = (
     "frame_clock_id",
     "unix_timestamp_s",
 )
+TRAINING_RUN_FIELDS = {
+    "dataset_repo_id",
+    "video_backend",
+    "policy_type",
+    "device",
+    "batch_size",
+    "steps",
+    "eval_freq",
+    "num_workers",
+    "wandb_enabled",
+    "push_to_hub",
+    "extra_cli_args",
+}
 
 
 @dataclass(frozen=True)
@@ -243,17 +256,25 @@ def validate_protocol(config: dict) -> list[Finding]:
     study = config.get("study", {})
     if not isinstance(study, Mapping):
         study = {}
+    if study.get("name") != "wrist_view_presentation":
+        findings.append(
+            _finding(
+                "ERROR",
+                "study_name",
+                "study.name must be 'wrist_view_presentation'",
+            )
+        )
     conditions = study.get("conditions", {})
     if not isinstance(conditions, Mapping) or set(conditions) != set(CONDITIONS):
         findings.append(
             _finding(
                 "ERROR",
                 "conditions",
-                "study.conditions must contain exactly A_mobile and B_pc",
+                "study.conditions must contain exactly A_mobile_colocated and B_desktop_separated",
             )
         )
     else:
-        for condition, display in CONDITIONS.items():
+        for condition, expected in CONDITION_SPECS.items():
             item = conditions[condition]
             if not isinstance(item, Mapping):
                 findings.append(
@@ -264,12 +285,38 @@ def validate_protocol(config: dict) -> list[Finding]:
                     )
                 )
                 continue
-            if item.get("display") != display:
-                findings.append(_finding("ERROR", "display", f"{condition}.display must be {display!r}"))
-            if item.get("camera_present") is not True:
-                findings.append(_finding("ERROR", "camera", f"{condition} must record the camera stream"))
-            if item.get("control") != "phone_imu":
-                findings.append(_finding("ERROR", "control", f"{condition}.control must be 'phone_imu'"))
+            if set(item) != set(expected):
+                findings.append(
+                    _finding(
+                        "ERROR",
+                        "condition_fields",
+                        f"{condition} fields must be exactly {sorted(expected)}",
+                    )
+                )
+            for field, expected_value in expected.items():
+                if item.get(field) != expected_value:
+                    findings.append(
+                        _finding(
+                            "ERROR",
+                            field,
+                            f"{condition}.{field} must be {expected_value!r}",
+                        )
+                    )
+
+        invariant_fields = set(next(iter(CONDITION_SPECS.values()))) - {
+            "display",
+            "feedback_control_relation",
+        }
+        for field in sorted(invariant_fields):
+            actual = {conditions[condition].get(field) for condition in CONDITION_SPECS}
+            if len(actual) != 1:
+                findings.append(
+                    _finding(
+                        "ERROR",
+                        "condition_invariant",
+                        f"A/B may not differ on {field}",
+                    )
+                )
 
     if study.get("paired_within_participant") is not True:
         findings.append(
@@ -438,6 +485,115 @@ def validate_protocol(config: dict) -> list[Finding]:
                 "training.random_seeds must contain at least three distinct integers",
             )
         )
+
+    condition_runs = training.get("condition_runs", {})
+    if not isinstance(condition_runs, Mapping) or set(condition_runs) != set(CONDITIONS):
+        findings.append(
+            _finding(
+                "ERROR",
+                "condition_runs",
+                "training.condition_runs must contain exactly A_mobile_colocated and B_desktop_separated",
+            )
+        )
+    elif not all(isinstance(run, Mapping) for run in condition_runs.values()):
+        findings.append(
+            _finding(
+                "ERROR",
+                "condition_runs",
+                "each training.condition_runs entry must be a JSON object",
+            )
+        )
+    else:
+        dataset_ids: list[object] = []
+        shared_runs: list[dict[str, object]] = []
+        for condition in CONDITIONS:
+            run = dict(condition_runs[condition])
+            if set(run) != TRAINING_RUN_FIELDS:
+                findings.append(
+                    _finding(
+                        "ERROR",
+                        "training_fields",
+                        f"training.condition_runs.{condition} fields must be exactly "
+                        f"{sorted(TRAINING_RUN_FIELDS)}",
+                    )
+                )
+            dataset_id = run.pop("dataset_repo_id", None)
+            dataset_ids.append(dataset_id)
+            shared_runs.append(run)
+            if not isinstance(dataset_id, str) or not dataset_id.strip():
+                findings.append(
+                    _finding(
+                        "ERROR",
+                        "dataset_repo_id",
+                        f"training.condition_runs.{condition}.dataset_repo_id must be populated",
+                    )
+                )
+            for field in ("video_backend", "policy_type", "device"):
+                value = run.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    findings.append(
+                        _finding(
+                            "ERROR",
+                            "training_value",
+                            f"training.condition_runs.{condition}.{field} must be populated",
+                        )
+                    )
+            for field, minimum in (
+                ("batch_size", 1),
+                ("steps", 1),
+                ("eval_freq", 0),
+                ("num_workers", 0),
+            ):
+                value = run.get(field)
+                if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                    findings.append(
+                        _finding(
+                            "ERROR",
+                            "training_value",
+                            f"training.condition_runs.{condition}.{field} must be an integer "
+                            f"of at least {minimum}",
+                        )
+                    )
+            for field in ("wandb_enabled", "push_to_hub"):
+                if not isinstance(run.get(field), bool):
+                    findings.append(
+                        _finding(
+                            "ERROR",
+                            "training_value",
+                            f"training.condition_runs.{condition}.{field} must be boolean",
+                        )
+                    )
+            extra_cli_args = run.get("extra_cli_args")
+            if not isinstance(extra_cli_args, list) or any(
+                not isinstance(value, str) or not value.strip() for value in extra_cli_args
+            ):
+                findings.append(
+                    _finding(
+                        "ERROR",
+                        "training_value",
+                        f"training.condition_runs.{condition}.extra_cli_args must be a list "
+                        "of non-empty CLI argument strings",
+                    )
+                )
+        valid_dataset_ids = [value for value in dataset_ids if isinstance(value, str) and value.strip()]
+        if len(valid_dataset_ids) == len(dataset_ids) and len(set(valid_dataset_ids)) != len(
+            valid_dataset_ids
+        ):
+            findings.append(
+                _finding(
+                    "ERROR",
+                    "dataset_repo_id",
+                    "A/B training runs must use distinct condition datasets",
+                )
+            )
+        if shared_runs[0] != shared_runs[1]:
+            findings.append(
+                _finding(
+                    "ERROR",
+                    "training_invariant",
+                    "A/B training configurations must be identical except for dataset_repo_id",
+                )
+            )
 
     analysis = config.get("analysis", {})
     if not isinstance(analysis, Mapping):
@@ -765,8 +921,8 @@ def validate_manifest_metadata(
             inconsistent_participants = []
             sequence_counts = {"A_first": 0, "B_first": 0}
             for participant_id, row in participant_orders.iterrows():
-                a_orders = row.get("A_mobile")
-                b_orders = row.get("B_pc")
+                a_orders = row.get("A_mobile_colocated")
+                b_orders = row.get("B_desktop_separated")
                 if a_orders == (1,) and b_orders == (2,):
                     sequence_counts["A_first"] += 1
                 elif a_orders == (2,) and b_orders == (1,):
@@ -805,7 +961,10 @@ def validate_raw_tree(
     max_clock_uncertainty_s: object,
 ) -> list[Finding]:
     findings: list[Finding] = []
-    condition_dirs = {"A_mobile": "cond_a_mobile", "B_pc": "cond_b_pc"}
+    condition_dirs = {
+        "A_mobile_colocated": "A_mobile_colocated",
+        "B_desktop_separated": "B_desktop_separated",
+    }
     action_columns = ["timestamp", "dx", "dy", "dz", "dyaw", "dpitch", "droll"]
     robot_columns = ["timestamp", *joint_names]
 

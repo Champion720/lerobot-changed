@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-SCRIPT = Path(__file__).parents[3] / "experiments" / "camera_ablation" / "make_episode_splits.py"
+SCRIPT = Path(__file__).parents[3] / "experiments" / "wrist_view_presentation" / "make_episode_splits.py"
 SPEC = importlib.util.spec_from_file_location("make_episode_splits", SCRIPT)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -19,7 +19,7 @@ def _manifest(n_participants: int = 12) -> pd.DataFrame:
     episode = 0
     for participant in range(n_participants):
         for task_index, difficulty in enumerate(difficulties):
-            for condition in ("A_mobile", "B_pc"):
+            for condition in ("A_mobile_colocated", "B_desktop_separated"):
                 rows.append(
                     {
                         "condition": condition,
@@ -63,14 +63,14 @@ def test_split_is_deterministic() -> None:
 def test_rejects_missing_condition_in_pair() -> None:
     manifest = _manifest(2)
     manifest = manifest.drop(manifest.index[-1])
-    with pytest.raises(ValueError, match="exactly one A_mobile and one B_pc"):
+    with pytest.raises(ValueError, match="exactly one A_mobile_colocated and one B_desktop_separated"):
         MODULE.validate_manifest(manifest)
 
 
 def test_rejects_inconsistent_pair_metadata() -> None:
     manifest = _manifest(2)
     manifest.loc[
-        (manifest["pair_id"] == "P0_pair_0") & (manifest["condition"] == "B_pc"),
+        (manifest["pair_id"] == "P0_pair_0") & (manifest["condition"] == "B_desktop_separated"),
         "difficulty",
     ] = "hard"
     with pytest.raises(ValueError, match="inconsistent difficulty"):
@@ -87,7 +87,7 @@ def test_episode_lists_are_condition_specific() -> None:
     )
     lists = MODULE.episode_lists(result)
     for split in MODULE.SPLIT_NAMES:
-        assert lists["A_mobile"][split] == lists["B_pc"][split]
+        assert lists["A_mobile_colocated"][split] == lists["B_desktop_separated"][split]
 
 
 def test_rejects_empty_or_null_manifest_metadata() -> None:
@@ -120,7 +120,7 @@ def test_rejects_invalid_trial_index(trial_index) -> None:
 
 def test_rejects_inconsistent_trial_index_within_pair() -> None:
     manifest = _manifest(3)
-    mask = (manifest["pair_id"] == "P0_pair_0") & (manifest["condition"] == "B_pc")
+    mask = (manifest["pair_id"] == "P0_pair_0") & (manifest["condition"] == "B_desktop_separated")
     manifest.loc[mask, "trial_index"] = 2
 
     with pytest.raises(ValueError, match="inconsistent trial_index"):

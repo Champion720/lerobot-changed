@@ -9,9 +9,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from experiments.camera_ablation import time_sync
+from experiments.wrist_view_presentation import time_sync
 
-SCRIPT = Path(__file__).parents[3] / "experiments" / "camera_ablation" / "validate_experiment_setup.py"
+SCRIPT = (
+    Path(__file__).parents[3] / "experiments" / "wrist_view_presentation" / "validate_experiment_setup.py"
+)
 SPEC = importlib.util.spec_from_file_location("validate_experiment_setup", SCRIPT)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -22,18 +24,23 @@ SPEC.loader.exec_module(MODULE)
 def _config() -> dict:
     return {
         "study": {
+            "name": "wrist_view_presentation",
             "paired_within_participant": True,
             "counterbalance_condition_order": True,
             "conditions": {
-                "A_mobile": {
+                "A_mobile_colocated": {
+                    "camera_present": True,
+                    "camera_view": "wrist",
                     "display": "mobile",
-                    "camera_present": True,
                     "control": "phone_imu",
+                    "feedback_control_relation": "colocated",
                 },
-                "B_pc": {
-                    "display": "pc",
+                "B_desktop_separated": {
                     "camera_present": True,
+                    "camera_view": "wrist",
+                    "display": "desktop",
                     "control": "phone_imu",
+                    "feedback_control_relation": "spatially_separated",
                 },
             },
         },
@@ -68,6 +75,34 @@ def _config() -> dict:
             "validation_fraction": 0.15,
             "test_fraction": 0.15,
             "random_seeds": [0, 1, 2],
+            "condition_runs": {
+                "A_mobile_colocated": {
+                    "dataset_repo_id": "local/A_mobile_colocated",
+                    "video_backend": "pyav",
+                    "policy_type": "act",
+                    "device": "cuda",
+                    "batch_size": 8,
+                    "steps": 5000,
+                    "eval_freq": 0,
+                    "num_workers": 0,
+                    "wandb_enabled": False,
+                    "push_to_hub": False,
+                    "extra_cli_args": [],
+                },
+                "B_desktop_separated": {
+                    "dataset_repo_id": "local/B_desktop_separated",
+                    "video_backend": "pyav",
+                    "policy_type": "act",
+                    "device": "cuda",
+                    "batch_size": 8,
+                    "steps": 5000,
+                    "eval_freq": 0,
+                    "num_workers": 0,
+                    "wandb_enabled": False,
+                    "push_to_hub": False,
+                    "extra_cli_args": [],
+                },
+            },
         },
         "analysis": {
             "planned_participants": 12,
@@ -94,13 +129,13 @@ def _manifest() -> pd.DataFrame:
         [
             {
                 **common,
-                "condition": "A_mobile",
+                "condition": "A_mobile_colocated",
                 "episode": 0,
                 "condition_order": 1,
             },
             {
                 **common,
-                "condition": "B_pc",
+                "condition": "B_desktop_separated",
                 "episode": 0,
                 "condition_order": 2,
             },
@@ -144,6 +179,46 @@ def _valid_video_meta() -> dict:
 
 def test_complete_protocol_passes() -> None:
     assert MODULE.validate_protocol(_config()) == []
+
+
+@pytest.mark.parametrize(
+    ("condition", "field", "value", "code"),
+    [
+        ("A_mobile_colocated", "camera_present", False, "camera_present"),
+        ("B_desktop_separated", "camera_view", "overhead", "camera_view"),
+        ("B_desktop_separated", "control", "desktop", "control"),
+        (
+            "A_mobile_colocated",
+            "feedback_control_relation",
+            "spatially_separated",
+            "feedback_control_relation",
+        ),
+    ],
+)
+def test_protocol_rejects_condition_invariant_drift(
+    condition: str,
+    field: str,
+    value: object,
+    code: str,
+) -> None:
+    config = _config()
+    config["study"]["conditions"][condition][field] = value
+
+    assert code in {finding.code for finding in MODULE.validate_protocol(config)}
+
+
+def test_protocol_rejects_training_drift_between_conditions() -> None:
+    config = _config()
+    config["training"]["condition_runs"]["B_desktop_separated"]["batch_size"] = 16
+
+    assert "training_invariant" in {finding.code for finding in MODULE.validate_protocol(config)}
+
+
+def test_protocol_requires_video_and_frame_timestamp_artifacts() -> None:
+    config = _config()
+    config["capture"]["required_files"].remove("video.mp4")
+
+    assert "required_files" in {finding.code for finding in MODULE.validate_protocol(config)}
 
 
 def test_placeholder_protocol_reports_blockers() -> None:
@@ -330,7 +405,7 @@ def test_frame_clock_crosscheck_uses_absolute_not_epoch_scaled_tolerance(
 def test_raw_tree_validator_decodes_video_and_validates_stream_contents(
     tmp_path: Path,
 ) -> None:
-    episode = tmp_path / "cond_a_mobile" / "episode_000"
+    episode = tmp_path / "A_mobile_colocated" / "episode_000"
     episode.mkdir(parents=True)
     pd.DataFrame(
         {
@@ -369,7 +444,7 @@ def test_raw_tree_validator_decodes_video_and_validates_stream_contents(
         "1,10.1,capture_unix,10.1\n",
         encoding="utf-8",
     )
-    manifest = pd.DataFrame([{"condition": "A_mobile", "episode": 0}])
+    manifest = pd.DataFrame([{"condition": "A_mobile_colocated", "episode": 0}])
     required = [
         "robot.csv",
         "phone.csv",

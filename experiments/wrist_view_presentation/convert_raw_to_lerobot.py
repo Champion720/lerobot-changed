@@ -7,10 +7,9 @@ demonstration with your own setup, dump it to the simple folder format below, an
 script packs it into the standard LeRobotDataset that `lerobot-train` consumes.
 
 Current experiment definition:
-  Condition A = camera stream displayed on the phone client; phone controls the end effector.
-  Condition B = camera stream displayed on the PC client; phone controls the end effector.
-Both conditions should normally include video.mp4. The --no_camera flag is kept only for
-legacy/debug datasets.
+  A_mobile_colocated = wrist stream displayed on the controlling phone.
+  B_desktop_separated = wrist stream displayed on a fixed desktop while the phone controls motion.
+Both conditions must include video.mp4 from the same wrist-camera source.
 
 DATA SEMANTICS (agreed for this project):
   action = [dx, dy, dz, dyaw, dpitch, droll]   accepted DELTA applied by the bridge (6D)
@@ -33,15 +32,17 @@ EXPECTED RAW FORMAT  (one folder per recorded episode):
   * When video.mp4 is present, its frame count should match; frames are matched by index.
 
 USAGE (run from the inner lerobot-main project dir):
-    # Condition A (mobile display) with FK-augmented state and camera video
-    uv run --extra training python experiments/camera_ablation/convert_raw_to_lerobot.py \
-        --raw_dir raw/cond_a_mobile --repo_id local/cond_a_mobile --fps 30 --task "pick and place" \
-        --dh_config experiments/camera_ablation/dh_params.json --resize 480x640
+    # A_mobile_colocated with FK-augmented state and wrist-camera video
+    uv run --extra training python experiments/wrist_view_presentation/convert_raw_to_lerobot.py \
+        --raw_dir raw/A_mobile_colocated --repo_id local/A_mobile_colocated --fps 30 \
+        --task "pick and place" \
+        --dh_config experiments/wrist_view_presentation/dh_params.json --resize 480x640
 
-    # Condition B (PC display) with FK-augmented state and camera video
-    uv run --extra training python experiments/camera_ablation/convert_raw_to_lerobot.py \
-        --raw_dir raw/cond_b_pc --repo_id local/cond_b_pc --fps 30 --task "pick and place" \
-        --dh_config experiments/camera_ablation/dh_params.json --resize 480x640
+    # B_desktop_separated with the identical state/video schema
+    uv run --extra training python experiments/wrist_view_presentation/convert_raw_to_lerobot.py \
+        --raw_dir raw/B_desktop_separated --repo_id local/B_desktop_separated --fps 30 \
+        --task "pick and place" \
+        --dh_config experiments/wrist_view_presentation/dh_params.json --resize 480x640
 """
 
 import argparse
@@ -454,8 +455,7 @@ def parse_resize(value: str | None) -> tuple[int, int] | None:
 
 def build_features(
     joint_names: Sequence[str],
-    has_camera: bool,
-    img_hw: tuple[int, int] | None,
+    img_hw: tuple[int, int],
     with_fk: bool,
 ):
     n_joints = len(joint_names)
@@ -463,9 +463,6 @@ def build_features(
         raise ValueError("joint_names must contain at least one name")
     if len(set(joint_names)) != n_joints:
         raise ValueError("joint_names must be unique")
-    if has_camera and img_hw is None:
-        raise ValueError("img_hw is required when has_camera=True")
-
     state_names = list(joint_names)
     if with_fk:
         state_names = state_names + EE_NAMES
@@ -477,9 +474,8 @@ def build_features(
             "names": ACTION_NAMES,
         },
     }
-    if has_camera:
-        h, w = img_hw
-        feats[CAM_KEY] = {"dtype": "video", "shape": (h, w, 3), "names": ["height", "width", "channels"]}
+    h, w = img_hw
+    feats[CAM_KEY] = {"dtype": "video", "shape": (h, w, 3), "names": ["height", "width", "channels"]}
     return feats
 
 
@@ -488,18 +484,17 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw_dir", required=True, help="Dir containing episode_* folders.")
-    parser.add_argument("--repo_id", required=True, help="Output dataset id, e.g. local/cond_b_camera.")
+    parser.add_argument(
+        "--repo_id",
+        required=True,
+        help="Output dataset id, e.g. local/B_desktop_separated.",
+    )
     parser.add_argument("--fps", type=int, required=True, help="Capture frame rate.")
     parser.add_argument("--task", required=True, help="Natural-language task description.")
     parser.add_argument(
         "--dh_config",
         default=None,
         help="DH params JSON. If set, state = [joint angles + FK end-effector pose].",
-    )
-    parser.add_argument(
-        "--no_camera",
-        action="store_true",
-        help="Legacy/debug mode: episodes have no video.mp4. Current A/B experiment should not use this.",
     )
     parser.add_argument("--resize", default=None, help="Force camera frames to HxW, e.g. 480x640.")
     parser.add_argument("--output_dir", default=None, help="Where to write the dataset.")
@@ -552,7 +547,6 @@ def main() -> None:
     if not args.task.strip():
         raise SystemExit("--task must not be empty")
 
-    has_camera = not args.no_camera
     fk = ForwardKinematics.from_json(args.dh_config) if args.dh_config else None
     try:
         resize_hw = parse_resize(args.resize)
@@ -594,15 +588,11 @@ def main() -> None:
     if not ep_dirs:
         raise SystemExit(f"No episode folders with {args.states_name} found under {raw_dir}")
     for ep in ep_dirs:
-        required = [ep / args.states_name, ep / args.actions_name]
-        if has_camera:
-            required.append(ep / args.video_name)
+        required = [ep / args.states_name, ep / args.actions_name, ep / args.video_name]
         missing = [path.name for path in required if not path.is_file()]
         if missing:
             raise SystemExit(f"{ep}: missing required file(s): {', '.join(missing)}")
-    input_names = [args.states_name, args.actions_name]
-    if has_camera:
-        input_names.append(args.video_name)
+    input_names = [args.states_name, args.actions_name, args.video_name]
     snapshot_owner, snapshot_ep_dirs, episode_fingerprints = make_input_snapshots(
         ep_dirs,
         input_names,
@@ -654,16 +644,15 @@ def main() -> None:
                 # Exercise joint normalization and FK before output creation.
                 make_state(joints)
                 lengths = {"states": len(joints), "actions": len(actions)}
-                if has_camera:
-                    video_count, episode_hw = probe_video(ep / args.video_name, resize_hw)
-                    lengths["video"] = video_count
-                    if img_hw is None:
-                        img_hw = episode_hw
-                    elif episode_hw != img_hw:
-                        raise ValueError(
-                            f"{ep / args.video_name}: frame size {episode_hw}; expected {img_hw}. "
-                            "Use --resize HxW to normalize episode resolution."
-                        )
+                video_count, episode_hw = probe_video(ep / args.video_name, resize_hw)
+                lengths["video"] = video_count
+                if img_hw is None:
+                    img_hw = episode_hw
+                elif episode_hw != img_hw:
+                    raise ValueError(
+                        f"{ep / args.video_name}: frame size {episode_hw}; expected {img_hw}. "
+                        "Use --resize HxW to normalize episode resolution."
+                    )
                 resolve_episode_length(
                     lengths,
                     args.max_length_mismatch,
@@ -682,14 +671,15 @@ def main() -> None:
         raise
 
     try:
-        camera_summary = f"{img_hw[0]}x{img_hw[1]}" if has_camera else "none"
+        if img_hw is None:
+            raise RuntimeError("internal error: wrist-camera dimensions were not established")
+        camera_summary = f"{img_hw[0]}x{img_hw[1]}"
         print(
             f"joints={n_joints}, state_dim={n_joints + (6 if fk else 0)}, "
             f"action_dim={a0.shape[1]}, camera={camera_summary}"
         )
         features = build_features(
             joint_names,
-            has_camera,
             img_hw,
             with_fk=fk is not None,
         )
@@ -705,7 +695,7 @@ def main() -> None:
             fps=args.fps,
             features=features,
             root=staging_root,
-            use_videos=has_camera,
+            use_videos=True,
             video_backend="pyav",
         )
 
@@ -728,7 +718,7 @@ def main() -> None:
                     f"(allowed by --max_length_mismatch={args.max_length_mismatch})"
                 )
 
-            video_frames = iter_video_frames(ep / args.video_name, resize_hw) if has_camera else None
+            video_frames = iter_video_frames(ep / args.video_name, resize_hw)
             try:
                 for t in range(n):
                     frame = {
@@ -736,12 +726,10 @@ def main() -> None:
                         "action": actions[t].astype(np.float32),
                         "task": args.task,
                     }
-                    if video_frames is not None:
-                        frame[CAM_KEY] = next(video_frames)
+                    frame[CAM_KEY] = next(video_frames)
                     dataset.add_frame(frame)
             finally:
-                if video_frames is not None:
-                    video_frames.close()
+                video_frames.close()
             dataset.save_episode()
             print(f"  {ep.name}: {n} frames")
 

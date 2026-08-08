@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 import torch
 
-from experiments.camera_ablation import (
+from experiments.wrist_view_presentation import (
     analysis_reproducibility,
     feature_extraction,
     features_compare,
@@ -22,42 +22,42 @@ def test_manifest_selection_and_pair_mapping_do_not_assume_equal_episode_indices
     pd.DataFrame(
         [
             {
-                "condition": "A_mobile",
+                "condition": "A_mobile_colocated",
                 "episode": 0,
                 "pair_id": "p0",
                 "participant_id": "P0",
                 "split": "train",
             },
             {
-                "condition": "B_pc",
+                "condition": "B_desktop_separated",
                 "episode": 5,
                 "pair_id": "p0",
                 "participant_id": "P0",
                 "split": "train",
             },
             {
-                "condition": "A_mobile",
+                "condition": "A_mobile_colocated",
                 "episode": 2,
                 "pair_id": "p1",
                 "participant_id": "P1",
                 "split": "test",
             },
             {
-                "condition": "B_pc",
+                "condition": "B_desktop_separated",
                 "episode": 8,
                 "pair_id": "p1",
                 "participant_id": "P1",
                 "split": "test",
             },
             {
-                "condition": "A_mobile",
+                "condition": "A_mobile_colocated",
                 "episode": 4,
                 "pair_id": "p2",
                 "participant_id": "P2",
                 "split": "test",
             },
             {
-                "condition": "B_pc",
+                "condition": "B_desktop_separated",
                 "episode": 9,
                 "pair_id": "p2",
                 "participant_id": "P2",
@@ -67,12 +67,12 @@ def test_manifest_selection_and_pair_mapping_do_not_assume_equal_episode_indices
     ).to_csv(manifest, index=False)
 
     selected_a, train_a = offline_compare._load_manifest_selection(
-        str(manifest), condition="A_mobile", split="test"
+        str(manifest), condition="A_mobile_colocated", split="test"
     )
     pairs = offline_compare._load_manifest_pairs(
         str(manifest),
-        condition_a="A_mobile",
-        condition_b="B_pc",
+        condition_a="A_mobile_colocated",
+        condition_b="B_desktop_separated",
         split="test",
     )
 
@@ -129,13 +129,13 @@ def test_manifest_rejects_participant_crossing_splits(tmp_path):
     pd.DataFrame(
         [
             {
-                "condition": "A_mobile",
+                "condition": "A_mobile_colocated",
                 "episode": 0,
                 "participant_id": "P1",
                 "split": "train",
             },
             {
-                "condition": "B_pc",
+                "condition": "B_desktop_separated",
                 "episode": 0,
                 "participant_id": "P1",
                 "split": "test",
@@ -151,28 +151,28 @@ def test_offline_aggregates_episodes_then_training_seeds_to_participant(tmp_path
     pd.DataFrame(
         [
             {
-                "condition": "A_mobile",
+                "condition": "A_mobile_colocated",
                 "episode": 0,
                 "participant_id": "P1",
                 "seed": "collection_seed_that_must_be_ignored",
                 "split": "test",
             },
             {
-                "condition": "A_mobile",
+                "condition": "A_mobile_colocated",
                 "episode": 1,
                 "participant_id": "P1",
                 "seed": "collection_seed_that_must_be_ignored",
                 "split": "test",
             },
             {
-                "condition": "A_mobile",
+                "condition": "A_mobile_colocated",
                 "episode": 2,
                 "participant_id": "P2",
                 "seed": "collection_seed_that_must_be_ignored",
                 "split": "test",
             },
             {
-                "condition": "A_mobile",
+                "condition": "A_mobile_colocated",
                 "episode": 3,
                 "participant_id": "P2",
                 "seed": "collection_seed_that_must_be_ignored",
@@ -196,7 +196,7 @@ def test_offline_aggregates_episodes_then_training_seeds_to_participant(tmp_path
             },
         },
         str(manifest),
-        condition="A_mobile",
+        condition="A_mobile_colocated",
         split="test",
     )
     # P1: seed 0 episode mean=2, seed 1 episode mean=6, cross-seed mean=4.
@@ -216,7 +216,7 @@ def test_offline_aggregates_episodes_then_training_seeds_to_participant(tmp_path
             3: {"translation_rmse_m": 2.0},
         },
         str(manifest),
-        condition="A_mobile",
+        condition="A_mobile_colocated",
         split="test",
     )
     assert one_checkpoint["P1"]["translation_rmse_m"] == pytest.approx(2.0)
@@ -311,7 +311,7 @@ def test_training_seeds_must_evaluate_the_identical_held_out_episodes():
         "1": {"selected_episodes": [1, 3]},
     }
     with pytest.raises(ValueError, match="identical held-out episodes"):
-        offline_compare._require_identical_episode_selection(audits, condition="A_mobile")
+        offline_compare._require_identical_episode_selection(audits, condition="A_mobile_colocated")
 
 
 def test_reproducibility_helpers_hash_inputs_and_write_strict_json(tmp_path):
@@ -410,7 +410,7 @@ def test_physical_roundtrip_fails_instead_of_using_normalized_scale():
 def test_labels_are_one_to_one_and_completion_time_excludes_failures():
     features = pd.DataFrame(
         {
-            "condition": ["A_mobile", "A_mobile"],
+            "condition": ["A_mobile_colocated", "A_mobile_colocated"],
             "episode": [0, 1],
             "raw_duration_s": [10.0, 60.0],
         }
@@ -654,7 +654,7 @@ def test_paired_analysis_rejects_unmatched_pairs_and_invalid_success():
 def test_participant_level_features_and_success_are_paired_exactly():
     rows_a = pd.DataFrame(
         {
-            "condition": ["A_mobile"] * 4,
+            "condition": ["A_mobile_colocated"] * 4,
             "participant_id": ["P1", "P1", "P2", "P2"],
             "metric": [1.0, 3.0, 2.0, 4.0],
             "success": [1, 0, 1, 1],
@@ -664,7 +664,7 @@ def test_participant_level_features_and_success_are_paired_exactly():
     )
     rows_b = pd.DataFrame(
         {
-            "condition": ["B_pc"] * 4,
+            "condition": ["B_desktop_separated"] * 4,
             "participant_id": ["P1", "P1", "P2", "P2"],
             "metric": [2.0, 4.0, 1.0, 3.0],
             "success": [0, 0, 1, 0],
@@ -672,8 +672,8 @@ def test_participant_level_features_and_success_are_paired_exactly():
             "condition_order": [2, 2, 1, 1],
         }
     )
-    features_compare.validate_condition_table(rows_a, "A_mobile")
-    features_compare.validate_condition_table(rows_b, "B_pc")
+    features_compare.validate_condition_table(rows_a, "A_mobile_colocated")
+    features_compare.validate_condition_table(rows_b, "B_desktop_separated")
     participant_a = features_compare.aggregate_participant_features(rows_a, ["metric"])
     assert participant_a.set_index("participant_id").loc["P1", "metric"] == 2.0
     success = features_compare.participant_success_comparison(rows_a, rows_b)
@@ -684,15 +684,15 @@ def test_participant_level_features_and_success_are_paired_exactly():
 def test_condition_is_not_overwritten_and_raw_duration_is_not_auto_tested():
     wrong = pd.DataFrame(
         {
-            "condition": ["B_pc"],
+            "condition": ["B_desktop_separated"],
             "participant_id": ["P1"],
             "success": [1],
             "difficulty": ["easy"],
             "condition_order": [1],
         }
     )
-    with pytest.raises(ValueError, match="A_mobile"):
-        features_compare.validate_condition_table(wrong, "A_mobile")
+    with pytest.raises(ValueError, match="A_mobile_colocated"):
+        features_compare.validate_condition_table(wrong, "A_mobile_colocated")
     assert "raw_duration_s" in features_compare.NON_FEATURE
 
 

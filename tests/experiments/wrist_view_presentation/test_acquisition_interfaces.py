@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from experiments.camera_ablation.acquisition_interfaces import (
+from experiments.wrist_view_presentation.acquisition_interfaces import (
     CARTESIAN_DELTA_ACTION_SCHEMA,
     GRIPPER_EXTENSION_VERSION,
     ClockToUnixMapping,
@@ -262,4 +262,16 @@ def test_reference_writer_only_writes_timing_metadata(tmp_path: Path) -> None:
             timing,
             metadata_path=metadata_path,
             timestamps_csv_path=timestamps_path,
+        )
+
+
+def test_video_timing_uses_formal_display_names() -> None:
+    with pytest.raises(VideoClockContractError, match="mobile.*desktop"):
+        VideoEpisodeTiming(
+            episode_id="episode_000",
+            video_path="video.mp4",
+            episode_start_timestamp_s=99.9,
+            display="pc",
+            clock_contract=make_same_clock_contract(),
+            frame_timestamps=(FrameTimestamp(0, 100.0, "capture_monotonic"),),
         )

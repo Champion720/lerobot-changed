@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from experiments.camera_ablation import time_sync
-from experiments.camera_ablation.robot_bridge import (
+from experiments.wrist_view_presentation import time_sync
+from experiments.wrist_view_presentation.robot_bridge import (
     BridgeStateError,
     CsvEpisodeRecorder,
     DryRunCartesianKinematics,
@@ -27,7 +27,7 @@ from experiments.camera_ablation.robot_bridge import (
 )
 
 REPO_ROOT = Path(__file__).parents[3]
-EXAMPLE_CONFIG = REPO_ROOT / "experiments" / "camera_ablation" / "robot_bridge_config.example.json"
+EXAMPLE_CONFIG = REPO_ROOT / "experiments" / "wrist_view_presentation" / "robot_bridge_config.example.json"
 
 
 def make_safety(**overrides) -> SafetyConfig:

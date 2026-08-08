@@ -27,9 +27,9 @@ non-commuting rotations and tool-frame translations when phone and output rates 
 ``start_ts + n/fps`` is only a legacy constant-frame-rate fallback.
 
 USAGE:
-    uv run --extra training python experiments/camera_ablation/time_sync.py \
-        --in_dir raw_ts/cond_b --out_dir raw/cond_b --out_fps 30 \
-        --robot_bridge_config experiments/camera_ablation/robot_bridge_config.json
+    uv run --extra training python experiments/wrist_view_presentation/time_sync.py \
+        --in_dir raw_ts/B_desktop_separated --out_dir raw/B_desktop_separated --out_fps 30 \
+        --robot_bridge_config experiments/wrist_view_presentation/robot_bridge_config.json
 """
 
 import argparse

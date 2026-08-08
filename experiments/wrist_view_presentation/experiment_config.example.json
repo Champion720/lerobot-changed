@@ -1,18 +1,22 @@
 {
   "schema_version": 1,
   "study": {
-    "name": "mobile_vs_pc_display",
+    "name": "wrist_view_presentation",
     "paired_within_participant": true,
     "conditions": {
-      "A_mobile": {
+      "A_mobile_colocated": {
+        "camera_present": true,
+        "camera_view": "wrist",
         "display": "mobile",
-        "camera_present": true,
-        "control": "phone_imu"
+        "control": "phone_imu",
+        "feedback_control_relation": "colocated"
       },
-      "B_pc": {
-        "display": "pc",
+      "B_desktop_separated": {
         "camera_present": true,
-        "control": "phone_imu"
+        "camera_view": "wrist",
+        "display": "desktop",
+        "control": "phone_imu",
+        "feedback_control_relation": "spatially_separated"
       }
     },
     "counterbalance_condition_order": true
@@ -80,7 +84,35 @@
     "split_seed": 20260728,
     "train_fraction": 0.7,
     "validation_fraction": 0.15,
-    "test_fraction": 0.15
+    "test_fraction": 0.15,
+    "condition_runs": {
+      "A_mobile_colocated": {
+        "dataset_repo_id": "local/A_mobile_colocated",
+        "video_backend": "pyav",
+        "policy_type": "act",
+        "device": "cuda",
+        "batch_size": 8,
+        "steps": 5000,
+        "eval_freq": 0,
+        "num_workers": 0,
+        "wandb_enabled": false,
+        "push_to_hub": false,
+        "extra_cli_args": []
+      },
+      "B_desktop_separated": {
+        "dataset_repo_id": "local/B_desktop_separated",
+        "video_backend": "pyav",
+        "policy_type": "act",
+        "device": "cuda",
+        "batch_size": 8,
+        "steps": 5000,
+        "eval_freq": 0,
+        "num_workers": 0,
+        "wandb_enabled": false,
+        "push_to_hub": false,
+        "extra_cli_args": []
+      }
+    }
   },
   "analysis": {
     "planned_participants": null,

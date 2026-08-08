@@ -1,0 +1,5 @@
+{
+  "0": "outputs/train/B_desktop_separated/seed_0/checkpoints/last/pretrained_model",
+  "1": "outputs/train/B_desktop_separated/seed_1/checkpoints/last/pretrained_model",
+  "2": "outputs/train/B_desktop_separated/seed_2/checkpoints/last/pretrained_model"
+}

@@ -7,7 +7,7 @@ from one person can leak across train and test. By default, participants are str
 by their complete difficulty profile.
 
 Example:
-    uv run --extra training python experiments/camera_ablation/make_episode_splits.py \
+    uv run --extra training python experiments/wrist_view_presentation/make_episode_splits.py \
         --manifest experiment_manifest.csv --out outputs/experiment_splits.csv \
         --seed 20260728
 
@@ -26,7 +26,23 @@ from pathlib import Path
 
 import pandas as pd
 
-CONDITIONS = {"A_mobile": "mobile", "B_pc": "pc"}
+CONDITION_SPECS = {
+    "A_mobile_colocated": {
+        "camera_present": True,
+        "camera_view": "wrist",
+        "display": "mobile",
+        "control": "phone_imu",
+        "feedback_control_relation": "colocated",
+    },
+    "B_desktop_separated": {
+        "camera_present": True,
+        "camera_view": "wrist",
+        "display": "desktop",
+        "control": "phone_imu",
+        "feedback_control_relation": "spatially_separated",
+    },
+}
+CONDITIONS = {condition: spec["display"] for condition, spec in CONDITION_SPECS.items()}
 REQUIRED_COLUMNS = {
     "condition",
     "episode",
@@ -96,7 +112,9 @@ def validate_manifest(df: pd.DataFrame) -> pd.DataFrame:
         conditions = set(pair["condition"])
         if conditions != set(CONDITIONS) or len(pair) != 2:
             raise ValueError(
-                f"pair_id {pair_id!r} must contain exactly one A_mobile and one B_pc row; "
+                "pair_id "
+                f"{pair_id!r} must contain exactly one A_mobile_colocated and one "
+                "B_desktop_separated row; "
                 f"found {sorted(conditions)} across {len(pair)} row(s)"
             )
         for column in PAIR_INVARIANTS:
@@ -110,7 +128,9 @@ def validate_manifest(df: pd.DataFrame) -> pd.DataFrame:
         actual = out["display"].astype(str).str.strip().str.lower()
         mismatch = actual.ne(expected)
         if mismatch.any():
-            raise ValueError("display must be mobile for A_mobile and pc for B_pc")
+            raise ValueError(
+                "display must be mobile for A_mobile_colocated and desktop for B_desktop_separated"
+            )
 
     return out
 

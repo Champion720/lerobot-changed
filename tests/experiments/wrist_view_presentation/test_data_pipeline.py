@@ -10,11 +10,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-CAMERA_ABLATION_DIR = Path(__file__).parents[3] / "experiments" / "camera_ablation"
+WRIST_VIEW_PRESENTATION_DIR = Path(__file__).parents[3] / "experiments" / "wrist_view_presentation"
 
 
 def _load_script(name: str):
-    spec = importlib.util.spec_from_file_location(name, CAMERA_ABLATION_DIR / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(name, WRIST_VIEW_PRESENTATION_DIR / f"{name}.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
@@ -764,7 +764,7 @@ def test_converter_rejects_reordered_protocol_columns(tmp_path: Path) -> None:
 
 
 def test_converter_supports_normal_package_import() -> None:
-    module = importlib.import_module("experiments.camera_ablation.convert_raw_to_lerobot")
+    module = importlib.import_module("experiments.wrist_view_presentation.convert_raw_to_lerobot")
 
     assert module.ForwardKinematics.__name__ == "ForwardKinematics"
 

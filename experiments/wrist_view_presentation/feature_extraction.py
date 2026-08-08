@@ -14,8 +14,9 @@ invalid trajectories remain in the output with ``quality_status`` so success/fai
 cannot be biased by silently dropping bad recordings.
 
 Example:
-    uv run --extra training python experiments/camera_ablation/feature_extraction.py \
-        --repo_id local/cond_b_pc --condition B_pc --labels_csv labels_B.csv \
+    uv run --extra training python experiments/wrist_view_presentation/feature_extraction.py \
+        --repo_id local/B_desktop_separated --condition B_desktop_separated \
+        --labels_csv labels_B_desktop_separated.csv \
         --out outputs/features_B.csv
 """
 
@@ -537,7 +538,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo_id", required=True)
     parser.add_argument("--root", default=None)
-    parser.add_argument("--condition", required=True, help="Row label, e.g. A_mobile or B_pc.")
+    parser.add_argument(
+        "--condition",
+        required=True,
+        choices=("A_mobile_colocated", "B_desktop_separated"),
+        help="Formal wrist-view presentation condition.",
+    )
     parser.add_argument("--out", required=True, help="Output feature CSV.")
     parser.add_argument("--video_backend", default="pyav")
     parser.add_argument(
@@ -702,7 +708,7 @@ def main() -> None:
     write_json(
         metadata_path,
         {
-            "artifact_type": "camera_ablation_feature_extraction",
+            "artifact_type": "wrist_view_presentation_feature_extraction",
             "arguments": vars(args),
             "datasets": {
                 "target": {

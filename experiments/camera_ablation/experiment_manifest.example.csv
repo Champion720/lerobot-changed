@@ -1,7 +1,0 @@
-condition,episode,pair_id,participant_id,task_id,difficulty,trial_index,condition_order,success,failure_type,placement_error_m,completion_time_s,video_latency_ms,dropped_frames
-A_mobile,0,P01_pick_simple_01,P01,pick_place_simple,simple,1,1,1,,0.003,18.4,85,0
-B_pc,0,P01_pick_simple_01,P01,pick_place_simple,simple,1,2,1,,0.002,16.9,63,0
-A_mobile,1,P01_pick_medium_01,P01,pick_place_medium,medium,1,1,0,grasp_failure,,60.0,91,2
-B_pc,1,P01_pick_medium_01,P01,pick_place_medium,medium,1,2,1,,0.004,31.2,66,0
-A_mobile,2,P02_pick_hard_01,P02,pick_place_hard,hard,1,2,0,collision,,22.8,89,1
-B_pc,2,P02_pick_hard_01,P02,pick_place_hard,hard,1,1,1,,0.004,42.7,64,0

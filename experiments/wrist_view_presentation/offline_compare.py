@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Leakage-safe offline ACT evaluation for the mobile-vs-PC display experiment.
+"""Leakage-safe offline ACT evaluation for the wrist-view presentation experiment.
 
 Formal mode evaluates every preregistered training seed on a frozen participant-safe
 split, restores actions to physical units, aggregates episodes to participants, and
@@ -908,7 +908,7 @@ def _formal(args: argparse.Namespace) -> None:
     audits_a: dict[str, dict[str, Any]] = {}
     audits_b: dict[str, dict[str, Any]] = {}
     for seed in seeds:
-        print(f"Evaluating training seed {seed}: condition A")
+        print(f"Evaluating training seed {seed}: A_mobile_colocated")
         metrics_a[seed], audits_a[seed] = _per_episode_errors(
             checkpoints_a[seed],
             args.repo_a,
@@ -927,7 +927,7 @@ def _formal(args: argparse.Namespace) -> None:
         if status_a != "verified":
             raise ValueError(f"A seed {seed} leakage audit failed: {message_a}")
 
-        print(f"Evaluating training seed {seed}: condition B")
+        print(f"Evaluating training seed {seed}: B_desktop_separated")
         metrics_b[seed], audits_b[seed] = _per_episode_errors(
             checkpoints_b[seed],
             args.repo_b,
@@ -1056,10 +1056,26 @@ def _diagnostic(args: argparse.Namespace) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo_a", required=True, help="Condition A LeRobot dataset repo id")
-    parser.add_argument("--root_a", default=None, help="Optional local root for condition A")
-    parser.add_argument("--repo_b", required=True, help="Condition B LeRobot dataset repo id")
-    parser.add_argument("--root_b", default=None, help="Optional local root for condition B")
+    parser.add_argument(
+        "--repo_a",
+        required=True,
+        help="A_mobile_colocated LeRobot dataset repo id",
+    )
+    parser.add_argument(
+        "--root_a",
+        default=None,
+        help="Optional local root for A_mobile_colocated",
+    )
+    parser.add_argument(
+        "--repo_b",
+        required=True,
+        help="B_desktop_separated LeRobot dataset repo id",
+    )
+    parser.add_argument(
+        "--root_b",
+        default=None,
+        help="Optional local root for B_desktop_separated",
+    )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--video_backend", default="pyav")
     parser.add_argument("--batch_size", type=int, default=16)
@@ -1071,8 +1087,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--protocol_config", default=None)
     parser.add_argument("--split_manifest", default=None)
     parser.add_argument("--split", default="test")
-    parser.add_argument("--condition_a", default="A_mobile")
-    parser.add_argument("--condition_b", default="B_pc")
+    parser.add_argument("--condition_a", default="A_mobile_colocated")
+    parser.add_argument("--condition_b", default="B_desktop_separated")
 
     parser.add_argument(
         "--diagnostic_single_checkpoint",

@@ -3004,6 +3004,7 @@ training = [
     { name = "jsonlines" },
     { name = "pandas" },
     { name = "pyarrow" },
+    { name = "scipy" },
     { name = "torchcodec", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'AMD64' and sys_platform == 'linux') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'arm64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or sys_platform == 'win32'" },
     { name = "wandb" },
 ]
@@ -3087,7 +3088,7 @@ requires-dist = [
     { name = "lerobot", extras = ["dataset"], marker = "extra == 'libero'" },
     { name = "lerobot", extras = ["dataset"], marker = "extra == 'metaworld'" },
     { name = "lerobot", extras = ["dataset"], marker = "extra == 'pusht'" },
-    { name = "lerobot", extras = ["dataset"], marker = "extra == 'training'" },
+    { name = "lerobot", extras = ["dataset", "scipy-dep"], marker = "extra == 'training'" },
     { name = "lerobot", extras = ["deepdiff-dep"], marker = "extra == 'dynamixel'" },
     { name = "lerobot", extras = ["deepdiff-dep"], marker = "extra == 'feetech'" },
     { name = "lerobot", extras = ["deepdiff-dep"], marker = "extra == 'hardware'" },

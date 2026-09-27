@@ -165,6 +165,18 @@ wandb/
 # Data folders
 data/
 outputs/
+/raw/
+/raw_ts/
+
+# Local camera-display experiment configuration and participant records
+experiments/wrist_view_presentation/dh_params.json
+experiments/wrist_view_presentation/experiment_config.json
+experiments/wrist_view_presentation/experiment_manifest.csv
+experiments/wrist_view_presentation/robot_bridge_config.json
+experiments/wrist_view_presentation/checkpoints_a.json
+experiments/wrist_view_presentation/checkpoints_b.json
+experiments/wrist_view_presentation/labels_*.csv
+/labels_*.csv
 
 # Translations
 *.mo

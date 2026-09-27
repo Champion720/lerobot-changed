@@ -25,6 +25,13 @@
 
 🤗 Comprehensive support for the open-source ecosystem to democratize physical AI.
 
+## 本仓库的论文实验扩展
+
+本工作区在 LeRobot 上增加了正式研究 `wrist_view_presentation`：固定机器人、腕部摄像头、
+手机 IMU 控制、任务和训练配置，比较视觉反馈与控制共置或空间分离时的演示与策略表现。
+运行方法见[实验 README](experiments/wrist_view_presentation/README.md)，不可随意改变的研究设计
+见[正式协议](experiments/wrist_view_presentation/PROTOCOL.md)。
+
 ## Quick Start
 
 LeRobot can be installed directly from PyPI.

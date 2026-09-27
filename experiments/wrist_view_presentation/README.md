@@ -1,52 +1,58 @@
-# 腕部视觉反馈呈现实验
+# Wrist-view Presentation 实验实现
 
-本目录实现唯一正式研究 `wrist_view_presentation`：在机器人平台、腕部摄像头、手机 IMU
-控制、任务和模型训练配置相同的前提下，比较腕部视觉反馈与运动控制共置或空间分离时的
-演示质量和模仿学习策略性能。代码不预设任一条件更优。
+本目录已按《实验方案》重构为两任务、两条件、SmolVLA 主线实验。研究协议见 [PROTOCOL.md](PROTOCOL.md)，逐项实施状态见 [MODIFICATION_PROGRESS.md](MODIFICATION_PROGRESS.md)。
 
-不可随意改变的研究设计见 [PROTOCOL.md](PROTOCOL.md)；本文只说明如何配置、运行和排错。
+## 当前状态
 
-## 正式条件
+软件侧已经具备：
 
-| 条件标识 | 腕部视频显示 | 运动控制 | 反馈与控制关系 |
-|---|---|---|---|
-| `A_mobile_colocated` | 控制手机 | 手机 IMU | `colocated` |
-| `B_desktop_separated` | 固定电脑屏幕 | 手机 IMU | `spatially_separated` |
+- 20 名参与者、G1–G4、200 次正式尝试的确定性清单生成与校验；
+- 堆叠和颜色分类的逐 episode 语言指令；
+- 等量平衡训练样本筛选和完整审计；
+- SmolVLA/可选 ACT 的多种子训练入口；
+- 240 次严格配对真实机器人 rollout 清单；
+- 条件 × 任务的人类示范分析和 A−B rollout 配对汇总。
 
-两组都必须使用 `camera_present=true`、`camera_view=wrist`、`control=phone_imu`，并保存同源
-腕部摄像头的 `video.mp4`、`video_meta.json` 和 `frame_timestamps.csv`。预检会把任何偏离作为
-错误处理。
+当前不能直接开展正式实验。示例配置故意将夹爪 schema、任务超时、真实布局/复位目录、时钟阈值、最低样本量、SmolVLA 资源和部署安全参数保留为 `null`，预检会阻止继续执行。
 
-## 1. 准备本地配置
+## 1. 创建本地正式配置
 
 从仓库根目录运行：
 
 ```powershell
 Copy-Item experiments/wrist_view_presentation/experiment_config.example.json `
   experiments/wrist_view_presentation/experiment_config.json
-Copy-Item experiments/wrist_view_presentation/experiment_manifest.example.csv `
-  experiments/wrist_view_presentation/experiment_manifest.csv
 Copy-Item experiments/wrist_view_presentation/dh_params.example.json `
   experiments/wrist_view_presentation/dh_params.json
 Copy-Item experiments/wrist_view_presentation/robot_bridge_config.example.json `
   experiments/wrist_view_presentation/robot_bridge_config.json
 ```
 
-正式文件已被 Git 忽略。不要提交参与者数据、真实硬件配置、凭据、checkpoint 或输出。
+在正式采集前补齐并冻结：
 
-必须按预注册内容替换以下占位项：
+- `capture.max_clock_uncertainty_s` 和 `capture.gripper`；
+- 两项任务的 `max_observation_time_s`；
+- `layout_catalog_path` 与 `evaluation.reset_catalog_path`（格式见 [CATALOG_FORMAT.md](CATALOG_FORMAT.md)）；
+- `training.minimum_eligible_per_condition_task`；
+- SmolVLA 的 `batch_size`、`steps`、`chunk_size` 与 `n_action_steps`；
+- 机器人 DH、关节顺序、工作空间，以及 `evaluation.deployment` 中的控制频率、watchdog 和命令过期阈值；
+- 独立急停、碰撞边界和真实硬件适配器。
 
-- `success_definition` 中的放置误差和超时阈值；
-- `tasks` 中简单、中等、困难三档真实任务；
-- `analysis.planned_participants`；
-- 实测 `capture.max_clock_uncertainty_s`；
-- 真实关节顺序、DH 参数、坐标系、安全边界和驱动时限；
-- `training.condition_runs` 中的本地数据集 ID 和共同训练参数。
+本地正式配置、参与者数据、checkpoint 与 `outputs/` 不应提交到 Git。
 
-`training.condition_runs` 的两份配置除 `dataset_repo_id` 外必须逐字段相同。正式预检会验证
-这一点，流水线也从同一份已验证配置启动两组训练。
+## 2. 生成并冻结 200 行正式清单
 
-## 2. 运行协议与清单预检
+```powershell
+uv run --extra training python experiments/wrist_view_presentation/generate_experiment_manifest.py `
+  --config experiments/wrist_view_presentation/experiment_config.json `
+  --out experiments/wrist_view_presentation/experiment_manifest.csv
+```
+
+生成结果满足每个“条件 × 任务”50 次、每组 5 人和每位参与者 10 次正式尝试。清单一旦冻结，只填写结果字段，不重新随机化。
+
+## 3. 协议和数据预检
+
+仅检查配置与清单：
 
 ```powershell
 uv run --extra training python experiments/wrist_view_presentation/validate_experiment_setup.py `
@@ -54,41 +60,7 @@ uv run --extra training python experiments/wrist_view_presentation/validate_expe
   --manifest experiments/wrist_view_presentation/experiment_manifest.csv
 ```
 
-示例配置故意保留研究者必须决定的阈值和样本量，因此不能直接通过正式预检。不要用方便的
-临时值绕过预注册。
-
-清单中每个 `pair_id` 必须恰好有一条 `A_mobile_colocated` 和一条
-`B_desktop_separated`，二者的 `participant_id`、任务、难度和试次编号必须一致；同一参与者
-在所有试次中保持同一条件顺序，参与者之间平衡 A-first/B-first。
-
-## 3. 采集目录与硬性数据契约
-
-硬件采集适配器必须发布如下目录：
-
-```text
-raw_ts/
-  A_mobile_colocated/episode_NNN/
-    robot.csv
-    phone.csv
-    applied_actions.csv
-    video.mp4
-    video_meta.json
-    frame_timestamps.csv
-  B_desktop_separated/episode_NNN/
-    ...相同文件...
-```
-
-- `robot.csv` 使用 `timestamp,<joint_names...>`；单位为秒和弧度。
-- `phone.csv` 保存收到的全部 6D 手机 IMU 增量，仅用于审计。
-- `applied_actions.csv` 只保存机器人实际执行的 6D 增量，训练只读该文件。
-- `video_meta.json` 必须由真实解码帧录像器声明
-  `artifact_type=video_episode_capture`、`writer_capability=decoded_frame_video_recorder` 和
-  `video_capture_verified_by_this_writer=true`。
-- `frame_timestamps.csv` 必须逐真实帧记录源时钟和 Unix 映射；不得用名义帧率推造时间戳。
-- 两组都记录视频延迟、掉帧和时钟不确定度，后续作为协变量或质量控制量。
-
-采集后运行带数据的预检；它会读取三路 CSV、核对元数据、逐帧时间戳和真实可解码帧数，并
-检查各流时间交集：
+采集后连同原始数据检查：
 
 ```powershell
 uv run --extra training python experiments/wrist_view_presentation/validate_experiment_setup.py `
@@ -97,46 +69,90 @@ uv run --extra training python experiments/wrist_view_presentation/validate_expe
   --raw_root raw_ts
 ```
 
-## 4. 正式流水线
+每个 episode 必须保存机器人状态、手机原始命令、机器人实际执行动作、夹爪动作/状态/schema、真实视频和逐帧时间戳。通用同步、预检和 LeRobot 转换链路已经支持夹爪；仍需用真实硬件适配器生成这些输入，并冻结量程与单位。
 
-`run_pipeline.ps1` 严格按以下顺序执行：采集门禁 → 时间同步 → LeRobot 转换 → 参与者安全
-划分 → A/B 多种子训练 → 统一测试集比较 → 特征比较 → 真实机器人 rollout。
+## 4. 等量筛选训练 episode
+
+结果填写完成且通过预检后运行：
+
+```powershell
+uv run --extra training python experiments/wrist_view_presentation/select_training_episodes.py `
+  --manifest experiments/wrist_view_presentation/experiment_manifest.csv `
+  --selection_seed 20260926 `
+  --minimum_per_cell <冻结的最小合格样本数> `
+  --out outputs/wrist_view_presentation/training_selection.csv `
+  --summary outputs/wrist_view_presentation/training_selection_summary.json
+```
+
+脚本先筛选完整成功且所有质量门槛合格的 episode，再把 A/B × 两任务四个单元下采样到共同最小值。不要手工删除失败记录或为某一条件单独挑选“更好”的轨迹。
+
+## 5. 原始数据转换
+
+转换器按清单与配置自动写入每个 episode 的英文任务 prompt，并生成源 episode 到 LeRobot episode 的映射：
+
+```powershell
+uv run --extra training python experiments/wrist_view_presentation/convert_raw_to_lerobot.py `
+  --raw_dir raw_ts/A_mobile_colocated `
+  --output_dir datasets/A_mobile_colocated `
+  --repo_id local/wrist_view_A `
+  --fps 30 `
+  --manifest experiments/wrist_view_presentation/experiment_manifest.csv `
+  --protocol_config experiments/wrist_view_presentation/experiment_config.json `
+  --condition A_mobile_colocated `
+  --source_map_out outputs/wrist_view_presentation/source_map_A_mobile_colocated.json
+```
+
+B 条件同理。转换器会强制核对夹爪 schema、量程、列名和逐 episode 长度；硬件适配器尚未提供真实数据时，预检会阻止正式转换。
+
+## 6. 完整流水线
+
+硬件采集和 rollout 适配器完成后：
 
 ```powershell
 .\experiments\wrist_view_presentation\run_pipeline.ps1 `
-  -Task "与协议 task_id 对应的任务描述" `
   -CollectionScript "<硬件采集适配器.ps1>" `
-  -RolloutScript "<统一真实机器人评估适配器.ps1>"
+  -RolloutScript "<短时域真实机器人评测适配器.ps1>"
 ```
 
-已有合格采集数据时可省略 `-CollectionScript`，脚本仍会执行完整数据预检。真实机器人适配器
-尚未提供时，脚本会在完成离线阶段后明确失败，不会把训练 loss 或离线误差冒充 rollout
-证据。适配器参数可通过 `-CollectionArguments` 和 `-RolloutArguments` 传入。
+流水线顺序为：预检 → 采集 → 同步/转换 → 冻结训练选择 → 多种子训练 → 人类示范分析 → 生成 240 次评测清单 → 真实机器人 rollout → 配对汇总。
 
-主要输出位于 `outputs/wrist_view_presentation/`，包括冻结划分、每个条件/种子的 checkpoint
-映射、统一测试集误差、演示特征比较和复现元数据。`outputs/` 已被 Git 忽略。
+rollout 适配器必须在 `outputs/wrist_view_presentation/rollout/rollout_results.csv` 写回完整冻结表；缺少任何正式结果时分析器会拒绝运行。
 
-## 5. 保留的通用实现
+## 7. 单独生成和分析 rollout 清单
 
-| 文件 | 职责 |
+```powershell
+uv run --extra training python experiments/wrist_view_presentation/make_rollout_manifest.py `
+  --config experiments/wrist_view_presentation/experiment_config.json `
+  --out outputs/wrist_view_presentation/rollout_manifest_smolvla.csv
+
+uv run --extra training python experiments/wrist_view_presentation/analyze_rollouts.py `
+  --results outputs/wrist_view_presentation/rollout/rollout_results.csv `
+  --out_dir outputs/wrist_view_presentation/rollout/analysis `
+  --expected_seeds 0,1,2
+```
+
+分析输出包括条件分层均值、120 个 A/B 严格配对行、A−B 差值汇总和描述性 95% t 置信区间。确认性模型与多重比较方案仍须在正式采集前预注册。
+
+## 8. 主要文件
+
+| 文件 | 作用 |
 |---|---|
-| `acquisition_interfaces.py` | 版本化手机动作、夹爪扩展、视频逐帧时钟契约 |
-| `robot_bridge.py` | FK/IK、运动约束、watchdog 和 `RobotDriver` 接口 |
-| `time_sync.py` | 按真实时间戳同步，并按顺序组合 SE(3) 增量 |
-| `convert_raw_to_lerobot.py` | 全量预检、流式视频解码和原子数据集发布 |
-| `make_episode_splits.py` | 按参与者隔离且按难度档案分层的划分 |
-| `offline_compare.py` | 冻结测试集上的多种子物理单位误差比较 |
-| `feature_extraction.py` | 速度、加速度、jerk、修正动作、轨迹和结果特征 |
-| `features_compare.py` | 参与者级配对统计、效应量、FDR 和条件×难度模型 |
-| `validate_experiment_setup.py` | 协议、配对、数据文件、视频和时钟的正式门禁 |
+| `experiment_config.example.json` | v2 协议、任务、训练与评测配置模板 |
+| `CATALOG_FORMAT.md` | 采集布局与 rollout 复位目录的版本化格式 |
+| `generate_experiment_manifest.py` | 生成/验证 200 次正式尝试 |
+| `validate_experiment_setup.py` | 配置、清单和原始数据停止门 |
+| `select_training_episodes.py` | 四单元等量训练选择与审计 |
+| `convert_raw_to_lerobot.py` | 逐 episode prompt 和源 ID 映射转换 |
+| `run_pipeline.ps1` | SmolVLA 主线端到端编排 |
+| `feature_extraction.py` / `features_compare.py` | 人类示范质量与条件 × 任务分析 |
+| `make_rollout_manifest.py` | 冻结 240 次真实机器人评测 |
+| `analyze_rollouts.py` | 验证完整结果并输出严格配对汇总 |
 
-## 6. 尚待真实硬件集成
+## 9. 测试
 
-- 实现具体机械臂的 `KinematicsProvider`、`RobotDriver` 和独立急停通道；
-- 将手机控制 DataChannel、腕部 WebRTC 解码帧录像器和条件显示端接入采集适配器；
-- 冻结夹爪动作/状态 schema，并接入采集、同步和转换；
-- 完成低速安全联调、试采集、真实 A/B 数据、多种子训练和统一 rollout；
-- 为 rollout 适配器记录成功、完成时间、碰撞、放置误差和未见场景表现。
+```powershell
+.\.venv\Scripts\python.exe -m pytest `
+  tests/experiments/wrist_view_presentation -q
+```
 
-这些事项完成前，仓库只证明软件契约和离线流程可测试，不证明实机闭环完成，也不支持关于
-任一条件优劣的结论。
+测试通过只说明软件契约和统计数据流一致；不代表夹爪、碰撞保护、急停或真实机器人闭环已经验证。

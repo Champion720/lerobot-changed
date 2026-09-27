@@ -1,6 +1,5 @@
 #!/usr/bin/env python
-"""Convert raw recordings (from your own phone-app / WebRTC capture system) into a
-LeRobot dataset, so you can train ACT on real Condition-A / Condition-B data.
+"""Convert synchronized recordings into a multi-task LeRobot dataset.
 
 This is the bridge between your Target1.1 capture system and LeRobot. You record each
 demonstration with your own setup, dump it to the simple folder format below, and this
@@ -11,9 +10,9 @@ Current experiment definition:
   B_desktop_separated = wrist stream displayed on a fixed desktop while the phone controls motion.
 Both conditions must include video.mp4 from the same wrist-camera source.
 
-DATA SEMANTICS (agreed for this project):
-  action = [dx, dy, dz, dyaw, dpitch, droll]   accepted DELTA applied by the bridge (6D)
-  state  = [joint angles j1..jN] (+ end-effector pose [x,y,z,yaw,pitch,roll] via FK)
+FORMAL DATA SEMANTICS:
+  action = [dx, dy, dz, dyaw, dpitch, droll, gripper_target]
+  state  = [joint angles j1..jN] (+ end-effector pose via FK) + measured gripper position
            The robot reports joint angles; the end-effector pose is computed from them
            with your DH table (--dh_config). Without --dh_config, state = joint angles only
            (no information lost: joints already determine the pose).
@@ -24,6 +23,7 @@ EXPECTED RAW FORMAT  (one folder per recorded episode):
         episode_000/
             states.csv     # one row per frame: joint angles j1..jN (what the robot reports)
             actions.csv    # one row per frame: the synchronized 6D delta actually applied
+            gripper_actions.csv / gripper_states.csv / gripper_schema.json
             video.mp4       # camera recording (current A/B experiment: present in both conditions)
         episode_001/ ...
 
@@ -35,13 +35,17 @@ USAGE (run from the inner lerobot-main project dir):
     # A_mobile_colocated with FK-augmented state and wrist-camera video
     uv run --extra training python experiments/wrist_view_presentation/convert_raw_to_lerobot.py \
         --raw_dir raw/A_mobile_colocated --repo_id local/A_mobile_colocated --fps 30 \
-        --task "pick and place" \
+        --manifest experiments/wrist_view_presentation/experiment_manifest.csv \
+        --protocol_config experiments/wrist_view_presentation/experiment_config.json \
+        --condition A_mobile_colocated \
         --dh_config experiments/wrist_view_presentation/dh_params.json --resize 480x640
 
     # B_desktop_separated with the identical state/video schema
     uv run --extra training python experiments/wrist_view_presentation/convert_raw_to_lerobot.py \
         --raw_dir raw/B_desktop_separated --repo_id local/B_desktop_separated --fps 30 \
-        --task "pick and place" \
+        --manifest experiments/wrist_view_presentation/experiment_manifest.csv \
+        --protocol_config experiments/wrist_view_presentation/experiment_config.json \
+        --condition B_desktop_separated \
         --dh_config experiments/wrist_view_presentation/dh_params.json --resize 480x640
 """
 
@@ -60,8 +64,14 @@ import numpy as np
 
 if __package__:
     from .forward_kinematics import ForwardKinematics
+    from .gripper_contract import load_and_validate_schema, normalize_gripper_contract, validate_values
 else:
     from forward_kinematics import ForwardKinematics
+    from gripper_contract import (  # type: ignore[no-redef]
+        load_and_validate_schema,
+        normalize_gripper_contract,
+        validate_values,
+    )
 
 DROP_COLS = {"timestamp", "time", "t", "frame", "index", "frame_index"}
 CAM_KEY = "observation.images.cam"
@@ -453,10 +463,72 @@ def parse_resize(value: str | None) -> tuple[int, int] | None:
     return height, width
 
 
+def _episode_index_from_dir(path: Path) -> int:
+    prefix = "episode_"
+    if not path.name.startswith(prefix):
+        raise ValueError(f"formal conversion requires episode_NNN directories, got {path.name!r}")
+    token = path.name[len(prefix) :]
+    if not token.isdigit():
+        raise ValueError(f"formal episode directory has a non-integer suffix: {path.name!r}")
+    return int(token)
+
+
+def load_episode_task_prompts(
+    manifest_path: str | Path,
+    protocol_config_path: str | Path,
+    condition: str,
+) -> dict[int, str]:
+    """Map raw episode indices to frozen per-task English policy prompts."""
+
+    if condition not in {"A_mobile_colocated", "B_desktop_separated"}:
+        raise ValueError(f"unknown formal condition {condition!r}")
+    config = json.loads(Path(protocol_config_path).read_text(encoding="utf-8"))
+    tasks = config.get("tasks")
+    if not isinstance(tasks, list):
+        raise ValueError("protocol config tasks must be a list")
+    prompts: dict[str, str] = {}
+    for row in tasks:
+        if not isinstance(row, dict):
+            raise ValueError("every protocol task must be an object")
+        task_id = str(row.get("task_id", "")).strip()
+        prompt = str(row.get("policy_task_en", "")).strip()
+        if not task_id or not prompt or task_id in prompts:
+            raise ValueError("protocol task_id and policy_task_en values must be unique and populated")
+        prompts[task_id] = prompt
+
+    result: dict[int, str] = {}
+    with Path(manifest_path).open("r", encoding="utf-8-sig", newline="") as stream:
+        reader = csv.DictReader(stream)
+        required = {"condition", "episode", "task_id"}
+        if reader.fieldnames is None or not required.issubset(reader.fieldnames):
+            raise ValueError(f"manifest must contain columns {sorted(required)}")
+        for row in reader:
+            if str(row["condition"]).strip() != condition:
+                continue
+            try:
+                episode_float = float(str(row["episode"]).strip())
+            except ValueError as exc:
+                raise ValueError(f"manifest has invalid episode {row['episode']!r}") from exc
+            if episode_float < 0 or not episode_float.is_integer():
+                raise ValueError(f"manifest has invalid episode {row['episode']!r}")
+            episode = int(episode_float)
+            task_id = str(row["task_id"]).strip()
+            if task_id not in prompts:
+                raise ValueError(f"manifest task_id {task_id!r} is absent from protocol tasks")
+            if episode in result:
+                raise ValueError(f"manifest repeats {condition} episode {episode}")
+            result[episode] = prompts[task_id]
+    if not result:
+        raise ValueError(f"manifest contains no episodes for {condition}")
+    return result
+
+
 def build_features(
     joint_names: Sequence[str],
     img_hw: tuple[int, int],
     with_fk: bool,
+    gripper_state_name: str | None = None,
+    gripper_action_name: str | None = None,
 ):
     n_joints = len(joint_names)
     if n_joints <= 0:
@@ -466,12 +538,17 @@ def build_features(
     state_names = list(joint_names)
     if with_fk:
         state_names = state_names + EE_NAMES
+    action_names = list(ACTION_NAMES)
+    if gripper_state_name is not None:
+        state_names.append(gripper_state_name)
+    if gripper_action_name is not None:
+        action_names.append(gripper_action_name)
     feats = {
         "observation.state": {"dtype": "float32", "shape": (len(state_names),), "names": state_names},
         "action": {
             "dtype": "float32",
-            "shape": (len(ACTION_NAMES),),
-            "names": ACTION_NAMES,
+            "shape": (len(action_names),),
+            "names": action_names,
         },
     }
     h, w = img_hw
@@ -490,7 +567,18 @@ def main() -> None:
         help="Output dataset id, e.g. local/B_desktop_separated.",
     )
     parser.add_argument("--fps", type=int, required=True, help="Capture frame rate.")
-    parser.add_argument("--task", required=True, help="Natural-language task description.")
+    parser.add_argument(
+        "--task",
+        default=None,
+        help="Legacy single-task description. Formal two-task conversion uses --manifest instead.",
+    )
+    parser.add_argument("--manifest", default=None, help="Formal episode manifest with condition/task_id.")
+    parser.add_argument("--protocol_config", default=None, help="Formal protocol config containing task prompts.")
+    parser.add_argument(
+        "--condition",
+        choices=("A_mobile_colocated", "B_desktop_separated"),
+        default=None,
+    )
     parser.add_argument(
         "--dh_config",
         default=None,
@@ -498,6 +586,11 @@ def main() -> None:
     )
     parser.add_argument("--resize", default=None, help="Force camera frames to HxW, e.g. 480x640.")
     parser.add_argument("--output_dir", default=None, help="Where to write the dataset.")
+    parser.add_argument(
+        "--source_map_out",
+        default=None,
+        help="Optional external copy of the source-to-LeRobot episode map.",
+    )
     parser.add_argument("--states_name", default="states.csv")
     parser.add_argument("--actions_name", default="actions.csv")
     parser.add_argument("--video_name", default="video.mp4")
@@ -544,8 +637,27 @@ def main() -> None:
         raise SystemExit(f"--max_episode_frames must be positive, got {args.max_episode_frames}")
     if not args.repo_id.strip():
         raise SystemExit("--repo_id must not be empty")
-    if not args.task.strip():
-        raise SystemExit("--task must not be empty")
+    using_manifest = any((args.manifest, args.protocol_config, args.condition))
+    gripper_contract = None
+    if using_manifest:
+        if not all((args.manifest, args.protocol_config, args.condition)):
+            raise SystemExit("formal conversion requires --manifest, --protocol_config, and --condition together")
+        if args.task is not None:
+            raise SystemExit("do not combine legacy --task with formal per-episode task metadata")
+        try:
+            protocol = json.loads(Path(args.protocol_config).read_text(encoding="utf-8"))
+            gripper_contract = normalize_gripper_contract(protocol["capture"]["gripper"])
+            manifest_tasks = load_episode_task_prompts(
+                args.manifest,
+                args.protocol_config,
+                args.condition,
+            )
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise SystemExit(str(exc)) from exc
+    else:
+        if not isinstance(args.task, str) or not args.task.strip():
+            raise SystemExit("provide legacy --task or the formal manifest/config/condition arguments")
+        manifest_tasks = None
 
     fk = ForwardKinematics.from_json(args.dh_config) if args.dh_config else None
     try:
@@ -589,10 +701,33 @@ def main() -> None:
         raise SystemExit(f"No episode folders with {args.states_name} found under {raw_dir}")
     for ep in ep_dirs:
         required = [ep / args.states_name, ep / args.actions_name, ep / args.video_name]
+        if gripper_contract is not None:
+            required.extend(
+                [
+                    ep / "gripper_actions.csv",
+                    ep / "gripper_states.csv",
+                    ep / "gripper_schema.json",
+                ]
+            )
         missing = [path.name for path in required if not path.is_file()]
         if missing:
             raise SystemExit(f"{ep}: missing required file(s): {', '.join(missing)}")
+    if manifest_tasks is not None:
+        try:
+            source_episode_ids = {_episode_index_from_dir(ep) for ep in ep_dirs}
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        manifest_episode_ids = set(manifest_tasks)
+        if source_episode_ids != manifest_episode_ids:
+            missing_from_raw = sorted(manifest_episode_ids - source_episode_ids)
+            missing_from_manifest = sorted(source_episode_ids - manifest_episode_ids)
+            raise SystemExit(
+                "formal manifest/raw episode mismatch: "
+                f"missing_from_raw={missing_from_raw}, missing_from_manifest={missing_from_manifest}"
+            )
     input_names = [args.states_name, args.actions_name, args.video_name]
+    if gripper_contract is not None:
+        input_names.extend(["gripper_actions.csv", "gripper_states.csv", "gripper_schema.json"])
     snapshot_owner, snapshot_ep_dirs, episode_fingerprints = make_input_snapshots(
         ep_dirs,
         input_names,
@@ -615,6 +750,23 @@ def main() -> None:
             ep_dirs[0] / args.actions_name,
             expected_columns=ACTION_NAMES,
         )
+        if gripper_contract is not None:
+            gripper_action_name = str(gripper_contract["action_column"])
+            gripper_state_name = str(gripper_contract["state_column"])
+            load_and_validate_schema(ep_dirs[0] / "gripper_schema.json", gripper_contract)
+            ga0 = read_csv(
+                ep_dirs[0] / "gripper_actions.csv",
+                expected_columns=[gripper_action_name],
+            )
+            gs0 = read_csv(
+                ep_dirs[0] / "gripper_states.csv",
+                expected_columns=[gripper_state_name],
+            )
+            validate_values(ga0, gripper_contract, stream="action", label="gripper_actions.csv")
+            validate_values(gs0, gripper_contract, stream="state", label="gripper_states.csv")
+        else:
+            gripper_action_name = gripper_state_name = None
+            ga0 = gs0 = None
         n_joints = j0.shape[1]
         if fk is not None and fk.n_joints != n_joints:
             raise SystemExit(f"DH config has {fk.n_joints} joints but states.csv has {n_joints} columns")
@@ -622,6 +774,7 @@ def main() -> None:
         # bad later episode from leaving an apparently trainable partial dataset.
         episode_lengths: dict[Path, dict[str, int]] = {}
         img_hw = None
+        source_episode_map: list[dict[str, object]] = []
         for ep in ep_dirs:
             try:
                 joints = (
@@ -632,6 +785,32 @@ def main() -> None:
                     if ep == ep_dirs[0]
                     else read_csv(ep / args.actions_name, expected_columns=ACTION_NAMES)
                 )
+                if gripper_contract is not None:
+                    load_and_validate_schema(ep / "gripper_schema.json", gripper_contract)
+                    gripper_actions = (
+                        ga0
+                        if ep == ep_dirs[0]
+                        else read_csv(ep / "gripper_actions.csv", expected_columns=[gripper_action_name])
+                    )
+                    gripper_states = (
+                        gs0
+                        if ep == ep_dirs[0]
+                        else read_csv(ep / "gripper_states.csv", expected_columns=[gripper_state_name])
+                    )
+                    validate_values(
+                        gripper_actions,
+                        gripper_contract,
+                        stream="action",
+                        label=f"{ep.name}/gripper_actions.csv",
+                    )
+                    validate_values(
+                        gripper_states,
+                        gripper_contract,
+                        stream="state",
+                        label=f"{ep.name}/gripper_states.csv",
+                    )
+                else:
+                    gripper_actions = gripper_states = None
                 if joints.shape[1] != n_joints:
                     raise ValueError(
                         f"{ep / args.states_name}: has {joints.shape[1]} joint columns; expected {n_joints}"
@@ -644,6 +823,9 @@ def main() -> None:
                 # Exercise joint normalization and FK before output creation.
                 make_state(joints)
                 lengths = {"states": len(joints), "actions": len(actions)}
+                if gripper_actions is not None and gripper_states is not None:
+                    lengths["gripper_actions"] = len(gripper_actions)
+                    lengths["gripper_states"] = len(gripper_states)
                 video_count, episode_hw = probe_video(ep / args.video_name, resize_hw)
                 lengths["video"] = video_count
                 if img_hw is None:
@@ -675,13 +857,15 @@ def main() -> None:
             raise RuntimeError("internal error: wrist-camera dimensions were not established")
         camera_summary = f"{img_hw[0]}x{img_hw[1]}"
         print(
-            f"joints={n_joints}, state_dim={n_joints + (6 if fk else 0)}, "
-            f"action_dim={a0.shape[1]}, camera={camera_summary}"
+            f"joints={n_joints}, state_dim={n_joints + (6 if fk else 0) + (1 if gs0 is not None else 0)}, "
+            f"action_dim={a0.shape[1] + (1 if ga0 is not None else 0)}, camera={camera_summary}"
         )
         features = build_features(
             joint_names,
             img_hw,
             with_fk=fk is not None,
+            gripper_state_name=gripper_state_name,
+            gripper_action_name=gripper_action_name,
         )
         staging_owner, staging_root = make_staging_area(target_root)
     except BaseException:
@@ -699,13 +883,30 @@ def main() -> None:
             video_backend="pyav",
         )
 
-        for ep in ep_dirs:
+        for lerobot_episode_index, ep in enumerate(ep_dirs):
             joints = j0 if ep == ep_dirs[0] else read_csv(ep / args.states_name, expected_columns=joint_names)
             actions = (
                 a0 if ep == ep_dirs[0] else read_csv(ep / args.actions_name, expected_columns=ACTION_NAMES)
             )
+            if gripper_contract is not None:
+                gripper_actions = (
+                    ga0
+                    if ep == ep_dirs[0]
+                    else read_csv(ep / "gripper_actions.csv", expected_columns=[gripper_action_name])
+                )
+                gripper_states = (
+                    gs0
+                    if ep == ep_dirs[0]
+                    else read_csv(ep / "gripper_states.csv", expected_columns=[gripper_state_name])
+                )
+            else:
+                gripper_actions = gripper_states = None
 
             states = make_state(joints)
+            if gripper_states is not None:
+                states = np.concatenate([states, gripper_states.astype(np.float32)], axis=1)
+            if gripper_actions is not None:
+                actions = np.concatenate([actions, gripper_actions.astype(np.float32)], axis=1)
             stream_lengths = episode_lengths[ep]
             n = resolve_episode_length(
                 stream_lengths,
@@ -721,16 +922,31 @@ def main() -> None:
             video_frames = iter_video_frames(ep / args.video_name, resize_hw)
             try:
                 for t in range(n):
+                    if manifest_tasks is None:
+                        task_prompt = args.task.strip()
+                        source_episode_id = _episode_index_from_dir(ep) if ep.name.startswith("episode_") else None
+                    else:
+                        source_episode_id = _episode_index_from_dir(ep)
+                        task_prompt = manifest_tasks[source_episode_id]
                     frame = {
                         "observation.state": states[t].astype(np.float32),
                         "action": actions[t].astype(np.float32),
-                        "task": args.task,
+                        "task": task_prompt,
                     }
                     frame[CAM_KEY] = next(video_frames)
                     dataset.add_frame(frame)
             finally:
                 video_frames.close()
             dataset.save_episode()
+            source_episode_map.append(
+                {
+                    "lerobot_episode_index": lerobot_episode_index,
+                    "source_episode_id": source_episode_id,
+                    "source_directory": ep.name,
+                    "task": task_prompt,
+                    "condition": args.condition,
+                }
+            )
             print(f"  {ep.name}: {n} frames")
 
         fingerprint_path = staging_root / "meta" / "source_fingerprints.json"
@@ -748,6 +964,20 @@ def main() -> None:
             + "\n",
             encoding="utf-8",
         )
+        episode_map_path = staging_root / "meta" / "source_episode_map.json"
+        episode_map_payload = (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "condition": args.condition,
+                    "episodes": source_episode_map,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        episode_map_path.write_text(episode_map_payload, encoding="utf-8")
         dataset.finalize()
         publish_staging_root(
             staging_root,
@@ -755,6 +985,10 @@ def main() -> None:
             target_was_empty=target_was_empty,
         )
         published = True
+        if args.source_map_out:
+            external_map = Path(args.source_map_out)
+            external_map.parent.mkdir(parents=True, exist_ok=True)
+            external_map.write_text(episode_map_payload, encoding="utf-8")
         cleanup_staging_root(staging_owner)
     finally:
         try:

@@ -607,19 +607,11 @@ def test_continuous_comparison_defaults_to_welch_and_supports_pairs():
     assert paired.loc[0, "test"] == "paired_t"
     assert paired.loc[0, "n_pairs"] == 4
     assert paired.loc[0, "diff_A_minus_B"] == pytest.approx(1.0)
+    assert paired.loc[0, "diff_ci95_low"] <= 1.0 <= paired.loc[0, "diff_ci95_high"]
     assert paired.loc[0, "effect_size_type"] == "cohens_dz"
 
 
-def test_paired_success_uses_exact_mcnemar():
-    a = pd.DataFrame({"pair_id": ["p1", "p2", "p3", "p4"], "success": [1, 1, 0, 0]})
-    b = pd.DataFrame({"pair_id": ["p4", "p3", "p2", "p1"], "success": [1, 1, 0, 1]})
-    result = features_compare.success_comparison(a, b, paired=True, pair_keys=["pair_id"])
-    assert result is not None
-    assert result["test"] == "exact_mcnemar"
-    assert result["n_pairs"] == 4
-
-
-def test_paired_analysis_rejects_unmatched_pairs_and_invalid_success():
+def test_paired_continuous_analysis_rejects_unmatched_or_incomplete_pairs():
     a = pd.DataFrame({"pair_id": ["p1", "p2"], "metric": [1.0, 2.0], "success": [1, 0]})
     unmatched = pd.DataFrame({"pair_id": ["p1", "p3"], "metric": [1.0, 3.0], "success": [1, 1]})
     with pytest.raises(ValueError, match="Refusing an inner join"):
@@ -635,22 +627,6 @@ def test_paired_analysis_rejects_unmatched_pairs_and_invalid_success():
             pair_keys=["pair_id"],
         )
 
-    invalid = pd.DataFrame(
-        {
-            "pair_id": ["p1", "p2"],
-            "metric": [1.0, 2.0],
-            "success": [1, "unknown"],
-        }
-    )
-    with pytest.raises(ValueError, match="non-numeric"):
-        features_compare.success_comparison(a, invalid, paired=True, pair_keys=["pair_id"])
-
-    missing = invalid.copy()
-    missing["success"] = [1, np.nan]
-    with pytest.raises(ValueError, match="missing"):
-        features_compare.success_comparison(a, missing, paired=True, pair_keys=["pair_id"])
-
-
 def test_participant_level_features_and_success_are_paired_exactly():
     rows_a = pd.DataFrame(
         {
@@ -658,7 +634,7 @@ def test_participant_level_features_and_success_are_paired_exactly():
             "participant_id": ["P1", "P1", "P2", "P2"],
             "metric": [1.0, 3.0, 2.0, 4.0],
             "success": [1, 0, 1, 1],
-            "difficulty": ["easy", "hard", "easy", "hard"],
+            "task_id": ["stacking", "color_sorting", "stacking", "color_sorting"],
             "condition_order": [1, 1, 2, 2],
         }
     )
@@ -668,7 +644,7 @@ def test_participant_level_features_and_success_are_paired_exactly():
             "participant_id": ["P1", "P1", "P2", "P2"],
             "metric": [2.0, 4.0, 1.0, 3.0],
             "success": [0, 0, 1, 0],
-            "difficulty": ["easy", "hard", "easy", "hard"],
+            "task_id": ["stacking", "color_sorting", "stacking", "color_sorting"],
             "condition_order": [2, 2, 1, 1],
         }
     )
@@ -679,6 +655,8 @@ def test_participant_level_features_and_success_are_paired_exactly():
     success = features_compare.participant_success_comparison(rows_a, rows_b)
     assert success["test"] == "participant_exact_sign"
     assert success["n_pairs"] == 2
+    assert success["SR_A_minus_B"] == pytest.approx(0.5)
+    assert success["diff_ci95_low"] <= success["SR_A_minus_B"] <= success["diff_ci95_high"]
 
 
 def test_condition_is_not_overwritten_and_raw_duration_is_not_auto_tested():
@@ -687,7 +665,7 @@ def test_condition_is_not_overwritten_and_raw_duration_is_not_auto_tested():
             "condition": ["B_desktop_separated"],
             "participant_id": ["P1"],
             "success": [1],
-            "difficulty": ["easy"],
+            "task_id": ["stacking"],
             "condition_order": [1],
         }
     )
@@ -743,38 +721,60 @@ def test_zero_variance_effect_size_is_not_reported_as_zero():
     assert np.isnan(features_compare.cohens_dz(np.ones(3), np.ones(3)))
 
 
-def test_factorial_model_reports_condition_by_difficulty_with_subject_block():
-    rng = np.random.default_rng(42)
+def test_protocol_v2_condition_table_and_task_factorial_model():
     rows = []
-    for participant in range(12):
-        subject_offset = participant * 0.2
-        for condition in ("A", "B"):
-            for difficulty in ("easy", "hard"):
-                interaction = 3.0 if condition == "B" and difficulty == "hard" else 0.0
-                value = (
-                    subject_offset
-                    + (1.0 if difficulty == "hard" else 0.0)
-                    + interaction
-                    + rng.normal(scale=0.05)
-                )
+    for participant_index in range(1, 9):
+        for condition in ("A_mobile_colocated", "B_desktop_separated"):
+            for task_id in ("stacking", "color_sorting"):
                 rows.append(
                     {
-                        "participant_id": f"P{participant:02d}",
+                        "participant_id": f"P{participant_index:02d}",
                         "condition": condition,
-                        "difficulty": difficulty,
-                        "condition_order": (1 if (participant % 2 == 0) == (condition == "A") else 2),
-                        "metric": value,
+                        "task_id": task_id,
+                        "condition_order": (
+                            1
+                            if (participant_index % 2 == 1)
+                            == (condition == "A_mobile_colocated")
+                            else 2
+                        ),
+                        "success": 1,
+                        "smoothness": (
+                            participant_index
+                            + (2.0 if condition == "B_desktop_separated" else 0.0)
+                            + (1.0 if task_id == "color_sorting" else 0.0)
+                        ),
                     }
                 )
-    result = features_compare.factorial_condition_difficulty(
-        pd.DataFrame(rows), ["metric"], subject_key="participant_id"
+    frame = pd.DataFrame(rows)
+    features_compare.validate_condition_table(
+        frame.loc[frame["condition"] == "A_mobile_colocated"],
+        "A_mobile_colocated",
     )
-    assert set(result["effect"]) == {
-        "condition",
-        "difficulty",
-        "condition:difficulty",
-        "condition_order",
-    }
-    interaction = result.loc[result["effect"] == "condition:difficulty"].iloc[0]
-    assert interaction["model"] == "participant_fixed_effects_cell_means"
-    assert interaction["p"] < 1e-10
+    result = features_compare.factorial_condition_task(
+        frame,
+        ["smoothness"],
+        subject_key="participant_id",
+    )
+    assert {"condition", "task_id", "condition:task_id"}.issubset(set(result["effect"]))
+    assert set(result["task_id_levels"]) == {"color_sorting/stacking"}
+
+
+def test_protocol_v2_participant_aggregation_weights_tasks_equally():
+    frame = pd.DataFrame(
+        {
+            "participant_id": ["P01", "P01", "P01", "P01", "P02", "P02"],
+            "task_id": [
+                "stacking",
+                "stacking",
+                "stacking",
+                "color_sorting",
+                "stacking",
+                "color_sorting",
+            ],
+            "metric": [0.0, 0.0, 0.0, 10.0, 2.0, 4.0],
+        }
+    )
+    aggregated = features_compare.aggregate_participant_features(frame, ["metric"])
+    values = aggregated.set_index("participant_id")["metric"]
+    assert values.loc["P01"] == 5.0
+    assert values.loc["P02"] == 3.0

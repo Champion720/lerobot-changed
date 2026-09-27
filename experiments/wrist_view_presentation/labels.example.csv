@@ -1,7 +1,5 @@
-episode,success,failure_type,pair_id,participant_id,task_id,difficulty,trial_index,condition_order,placement_error_m,completion_time_s,video_latency_ms,dropped_frames
-0,1,,P01_pick_simple_01,P01,pick_place_simple,simple,1,1,0.003,18.4,85,0
-1,1,,P01_pick_simple_02,P01,pick_place_simple,simple,2,1,0.004,19.1,82,0
-2,1,,P01_pick_medium_01,P01,pick_place_medium,medium,1,1,0.004,31.2,90,1
-3,0,grasp_failure,P01_pick_medium_02,P01,pick_place_medium,medium,2,1,,,88,0
-4,0,collision,P01_pick_hard_01,P01,pick_place_hard,hard,1,1,,,92,2
-5,0,timeout,P01_pick_hard_02,P01,pick_place_hard,hard,2,1,,60.0,89,1
+episode,success,failure_type,pair_id,participant_id,group_id,task_id,layout_id,layout_regime,condition_order,stage_score,completion_time_s,successful_grasps,grasp_retries,drop_count,manual_intervention,stable_for_2s,video_latency_ms,dropped_frames,clock_uncertainty_s,recording_valid,sync_valid,gripper_valid,training_eligible,exclusion_reason
+0,1,,P01_stacking_01,P01,G4,stacking,stacking_layout_03,train_layout,1,1.0,21.4,1,0,0,0,1,85,0,0.003,1,1,1,1,
+1,0,unstable_stack,P01_stacking_02,P01,G4,stacking,stacking_layout_01,train_layout,1,0.5,35.8,1,1,1,0,0,88,0,0.003,1,1,1,0,outcome_not_success
+2,1,,P01_color_sorting_01,P01,G4,color_sorting,sorting_layout_04,train_layout,1,1.0,28.7,2,0,0,0,1,82,0,0.002,1,1,1,1,
+3,0,wrong_box,P01_color_sorting_02,P01,G4,color_sorting,sorting_layout_02,train_layout,1,0.5,42.1,2,1,0,0,0,90,1,0.004,1,1,1,0,outcome_not_success

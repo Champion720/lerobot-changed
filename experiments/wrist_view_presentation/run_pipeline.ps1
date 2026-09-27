@@ -3,10 +3,10 @@ param(
   [string]$Manifest = "experiments/wrist_view_presentation/experiment_manifest.csv",
   [string]$RawTimestampRoot = "raw_ts",
   [string]$SyncedRoot = "raw",
-  [string]$SplitManifest = "outputs/wrist_view_presentation/participant_splits.csv",
   [string]$DhConfig = "experiments/wrist_view_presentation/dh_params.json",
   [string]$RobotBridgeConfig = "experiments/wrist_view_presentation/robot_bridge_config.json",
-  [string]$Task,
+  [string]$SelectionManifest = "outputs/wrist_view_presentation/training_selection.csv",
+  [string]$SelectionSummary = "outputs/wrist_view_presentation/training_selection.json",
   [string]$Resize = "480x640",
   [string]$CollectionScript,
   [string]$RolloutScript,
@@ -14,17 +14,14 @@ param(
   [string[]]$RolloutArguments = @()
 )
 
-# Formal study pipeline. Run from the repository root containing pyproject.toml.
-# CollectionScript and RolloutScript are hardware-specific adapters. The collection
-# adapter must publish both formal condition directories under RawTimestampRoot. The
-# rollout adapter must evaluate both checkpoint maps on the same preregistered real-
-# robot task suite and write trial-level outcomes; this repository cannot supply a
-# vendor driver or silently substitute an offline metric for that evidence.
+# Formal two-task pipeline. The hardware-specific collection adapter must publish
+# both condition directories. The rollout adapter must consume the frozen rollout
+# manifest and write trial-level outcomes. Offline loss is never substituted for
+# the preregistered real-robot evidence.
 
 $ErrorActionPreference = "Stop"
 $StudyDir = "experiments/wrist_view_presentation"
-$ConditionA = "A_mobile_colocated"
-$ConditionB = "B_desktop_separated"
+$Conditions = @("A_mobile_colocated", "B_desktop_separated")
 $OutputRoot = "outputs/wrist_view_presentation"
 
 function Invoke-Uv {
@@ -35,9 +32,42 @@ function Invoke-Uv {
   }
 }
 
-function Get-ConditionRun {
+function Get-ObjectProperty {
+  param(
+    [Parameter(Mandatory = $true)][object]$Object,
+    [Parameter(Mandatory = $true)][string]$Name
+  )
+  $Property = $Object.PSObject.Properties[$Name]
+  if ($null -eq $Property) {
+    throw "Missing required configuration property: $Name"
+  }
+  return $Property.Value
+}
+
+function Get-DatasetId {
   param([Parameter(Mandatory = $true)][object]$Protocol, [Parameter(Mandatory = $true)][string]$Condition)
-  return $Protocol.training.condition_runs.PSObject.Properties[$Condition].Value
+  return Get-ObjectProperty -Object $Protocol.training.condition_datasets -Name $Condition
+}
+
+function Get-MappedEpisodes {
+  param(
+    [Parameter(Mandatory = $true)][object[]]$Rows,
+    [Parameter(Mandatory = $true)][string]$MapPath
+  )
+  $MapPayload = Get-Content -LiteralPath $MapPath -Raw | ConvertFrom-Json
+  $EpisodeMap = @{}
+  foreach ($Entry in @($MapPayload.episodes)) {
+    $EpisodeMap[[string][int]$Entry.source_episode_id] = [int]$Entry.lerobot_episode_index
+  }
+  $Mapped = @()
+  foreach ($Row in $Rows) {
+    $Key = [string][int]$Row.episode
+    if (-not $EpisodeMap.ContainsKey($Key)) {
+      throw "Selected source episode $Key is absent from $MapPath"
+    }
+    $Mapped += $EpisodeMap[$Key]
+  }
+  return @($Mapped | Sort-Object -Unique)
 }
 
 if (-not (Test-Path -LiteralPath "pyproject.toml" -PathType Leaf)) {
@@ -48,29 +78,26 @@ foreach ($RequiredPath in @($Config, $Manifest, $DhConfig, $RobotBridgeConfig)) 
     throw "Missing required formal-study input: $RequiredPath"
   }
 }
-if ([string]::IsNullOrWhiteSpace($Task)) {
-  throw "-Task is required and must match the preregistered task semantics."
-}
 
 $Protocol = Get-Content -LiteralPath $Config -Raw | ConvertFrom-Json
-$RunA = Get-ConditionRun -Protocol $Protocol -Condition $ConditionA
-$RunB = Get-ConditionRun -Protocol $Protocol -Condition $ConditionB
 $TargetFps = [double]$Protocol.capture.target_fps
 $Seeds = @($Protocol.training.random_seeds)
-$SplitSeed = [int]$Protocol.training.split_seed
-$MinParticipants = [int]$Protocol.analysis.minimum_participants_per_split
+$SelectionSeed = [int]$Protocol.training.selection_seed
+$PrimaryFamily = [string]$Protocol.evaluation.policy_family
 
-Write-Host "=== [1/8] Collect or verify paired wrist-view episodes ===" -ForegroundColor Cyan
+Write-Host "=== [1/8] Validate protocol and collect paired formal episodes ===" -ForegroundColor Cyan
+Invoke-Uv -Arguments @(
+  "run", "--extra", "training", "python", "$StudyDir/validate_experiment_setup.py",
+  "--config", $Config, "--manifest", $Manifest
+)
 if ($CollectionScript) {
   if (-not (Test-Path -LiteralPath $CollectionScript -PathType Leaf)) {
     throw "Collection adapter does not exist: $CollectionScript"
   }
   & $CollectionScript @CollectionArguments
-  if (-not $?) {
-    throw "Collection adapter failed"
-  }
+  if (-not $?) { throw "Collection adapter failed" }
 }
-foreach ($Condition in @($ConditionA, $ConditionB)) {
+foreach ($Condition in $Conditions) {
   $ConditionRoot = Join-Path $RawTimestampRoot $Condition
   if (-not (Test-Path -LiteralPath $ConditionRoot -PathType Container)) {
     throw "Missing collected condition directory: $ConditionRoot"
@@ -81,129 +108,159 @@ Invoke-Uv -Arguments @(
   "--config", $Config, "--manifest", $Manifest, "--raw_root", $RawTimestampRoot
 )
 
-Write-Host "=== [2/8] Synchronize robot, applied-action, and per-frame video clocks ===" -ForegroundColor Cyan
-foreach ($Condition in @($ConditionA, $ConditionB)) {
+Write-Host "=== [2/8] Synchronize robot, gripper, action, and video clocks ===" -ForegroundColor Cyan
+foreach ($Condition in $Conditions) {
   Invoke-Uv -Arguments @(
     "run", "--extra", "training", "python", "$StudyDir/time_sync.py",
     "--in_dir", (Join-Path $RawTimestampRoot $Condition),
     "--out_dir", (Join-Path $SyncedRoot $Condition),
-    "--out_fps", "$TargetFps", "--robot_bridge_config", $RobotBridgeConfig
+    "--out_fps", "$TargetFps", "--robot_bridge_config", $RobotBridgeConfig,
+    "--protocol_config", $Config
   )
 }
 
-Write-Host "=== [3/8] Convert both video-bearing datasets to LeRobot ===" -ForegroundColor Cyan
-foreach ($Condition in @($ConditionA, $ConditionB)) {
-  $Run = Get-ConditionRun -Protocol $Protocol -Condition $Condition
+Write-Host "=== [3/8] Convert both conditions with per-episode task prompts ===" -ForegroundColor Cyan
+New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
+$SourceMaps = @{}
+foreach ($Condition in $Conditions) {
+  $DatasetId = Get-DatasetId -Protocol $Protocol -Condition $Condition
+  $MapPath = "$OutputRoot/source_episode_map_${Condition}.json"
+  $SourceMaps[$Condition] = $MapPath
   Invoke-Uv -Arguments @(
     "run", "--extra", "training", "python", "$StudyDir/convert_raw_to_lerobot.py",
     "--raw_dir", (Join-Path $SyncedRoot $Condition),
-    "--repo_id", $Run.dataset_repo_id, "--fps", "$TargetFps", "--task", $Task,
-    "--dh_config", $DhConfig, "--resize", $Resize
+    "--repo_id", $DatasetId, "--fps", "$TargetFps",
+    "--manifest", $Manifest, "--protocol_config", $Config, "--condition", $Condition,
+    "--source_map_out", $MapPath, "--dh_config", $DhConfig, "--resize", $Resize
   )
 }
 
-Write-Host "=== [4/8] Freeze participant-safe train/validation/test splits ===" -ForegroundColor Cyan
+Write-Host "=== [4/8] Freeze equal successful training demonstrations ===" -ForegroundColor Cyan
 Invoke-Uv -Arguments @(
-  "run", "--extra", "training", "python", "$StudyDir/make_episode_splits.py",
-  "--manifest", $Manifest, "--out", $SplitManifest, "--seed", "$SplitSeed",
-  "--train_fraction", "$($Protocol.training.train_fraction)",
-  "--validation_fraction", "$($Protocol.training.validation_fraction)",
-  "--test_fraction", "$($Protocol.training.test_fraction)",
-  "--min_participants_per_split", "$MinParticipants"
-)
-$SplitRows = Import-Csv -LiteralPath $SplitManifest
+    "run", "--extra", "training", "python", "$StudyDir/select_training_episodes.py",
+    "--manifest", $Manifest, "--out", $SelectionManifest, "--summary", $SelectionSummary,
+    "--selection_seed", "$SelectionSeed",
+    "--minimum_per_cell", "$($Protocol.training.minimum_eligible_per_condition_task)"
+  )
+$SelectionRows = @(Import-Csv -LiteralPath $SelectionManifest)
 
-Write-Host "=== [5/8] Train paired multi-seed policies with one shared configuration ===" -ForegroundColor Cyan
-$CheckpointA = [ordered]@{}
-$CheckpointB = [ordered]@{}
-foreach ($Seed in $Seeds) {
-  foreach ($Condition in @($ConditionA, $ConditionB)) {
-    $Run = Get-ConditionRun -Protocol $Protocol -Condition $Condition
-    $TrainEpisodes = @(
-      $SplitRows |
-        Where-Object { $_.condition -eq $Condition -and $_.split -eq "train" } |
-        ForEach-Object { [int]$_.episode }
+Write-Host "=== [5/8] Train enabled policy families with paired random seeds ===" -ForegroundColor Cyan
+$CheckpointFiles = @{}
+foreach ($FamilyProperty in $Protocol.training.policy_families.PSObject.Properties) {
+  $Family = [string]$FamilyProperty.Name
+  $Run = $FamilyProperty.Value
+  if ($Run.enabled -ne $true) { continue }
+  foreach ($Condition in $Conditions) {
+    $DatasetId = Get-DatasetId -Protocol $Protocol -Condition $Condition
+    $SelectedRows = @(
+      $SelectionRows | Where-Object {
+        $_.condition -eq $Condition -and $_.selected_for_training -eq "True"
+      }
     )
-    if ($TrainEpisodes.Count -eq 0) {
-      throw "No training episodes were assigned for $Condition"
+    if ($SelectedRows.Count -eq 0) {
+      throw "No selected training episodes for $Family/$Condition"
     }
-    $EpisodeJson = ConvertTo-Json -InputObject $TrainEpisodes -Compress
-    $TrainOutput = "$OutputRoot/train/$Condition/seed_$Seed"
-    $TrainArguments = @(
-      "run", "--extra", "training", "lerobot-train",
-      "--dataset.repo_id=$($Run.dataset_repo_id)", "--dataset.episodes=$EpisodeJson",
-      "--dataset.video_backend=$($Run.video_backend)", "--policy.type=$($Run.policy_type)",
-      "--policy.device=$($Run.device)",
-      "--policy.push_to_hub=$($Run.push_to_hub.ToString().ToLowerInvariant())",
-      "--seed=$Seed", "--output_dir=$TrainOutput", "--job_name=${Condition}_seed_$Seed",
-      "--batch_size=$($Run.batch_size)", "--steps=$($Run.steps)",
-      "--eval_freq=$($Run.eval_freq)", "--num_workers=$($Run.num_workers)",
-      "--wandb.enable=$($Run.wandb_enabled.ToString().ToLowerInvariant())"
-    )
-    if ($Run.extra_cli_args) {
-      $TrainArguments += @($Run.extra_cli_args)
+    $TrainEpisodes = Get-MappedEpisodes -Rows $SelectedRows -MapPath $SourceMaps[$Condition]
+    $EpisodeJson = ConvertTo-Json -InputObject ([object[]]$TrainEpisodes) -Compress
+    $CheckpointMap = [ordered]@{}
+    foreach ($Seed in $Seeds) {
+      $TrainOutput = "$OutputRoot/train/$Family/$Condition/seed_$Seed"
+      $TrainArguments = @("run")
+      foreach ($Extra in @($Run.dependency_extras)) {
+        $TrainArguments += @("--extra", [string]$Extra)
+      }
+      $TrainArguments += @(
+        "lerobot-train",
+        "--dataset.repo_id=$DatasetId", "--dataset.episodes=$EpisodeJson",
+        "--dataset.video_backend=$($Run.video_backend)"
+      )
+      if ($Run.PSObject.Properties["policy_path"]) {
+        $TrainArguments += "--policy.path=$($Run.policy_path)"
+      } elseif ($Run.PSObject.Properties["policy_type"]) {
+        $TrainArguments += "--policy.type=$($Run.policy_type)"
+      } else {
+        throw "Policy family $Family needs policy_path or policy_type"
+      }
+      if ($Run.PSObject.Properties["chunk_size"]) {
+        $TrainArguments += "--policy.chunk_size=$($Run.chunk_size)"
+      }
+      if ($Run.PSObject.Properties["n_action_steps"]) {
+        $TrainArguments += "--policy.n_action_steps=$($Run.n_action_steps)"
+      }
+      $TrainArguments += @(
+        "--policy.device=$($Run.device)",
+        "--policy.push_to_hub=$($Run.push_to_hub.ToString().ToLowerInvariant())",
+        "--seed=$Seed", "--output_dir=$TrainOutput", "--job_name=${Family}_${Condition}_seed_$Seed",
+        "--batch_size=$($Run.batch_size)", "--steps=$($Run.steps)",
+        "--eval_freq=$($Run.eval_freq)", "--num_workers=$($Run.num_workers)",
+        "--wandb.enable=$($Run.wandb_enabled.ToString().ToLowerInvariant())"
+      )
+      if ($Run.extra_cli_args) { $TrainArguments += @($Run.extra_cli_args) }
+      Invoke-Uv -Arguments $TrainArguments
+      $CheckpointMap["$Seed"] = "$TrainOutput/checkpoints/last/pretrained_model"
     }
-    Invoke-Uv -Arguments $TrainArguments
-    $Checkpoint = "$TrainOutput/checkpoints/last/pretrained_model"
-    if ($Condition -eq $ConditionA) { $CheckpointA["$Seed"] = $Checkpoint }
-    else { $CheckpointB["$Seed"] = $Checkpoint }
+    $CheckpointPath = "$OutputRoot/checkpoints_${Family}_${Condition}.json"
+    $CheckpointMap | ConvertTo-Json | Set-Content -LiteralPath $CheckpointPath -Encoding UTF8
+    $CheckpointFiles["${Family}|${Condition}"] = $CheckpointPath
   }
 }
-New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
-$CheckpointAPath = "$OutputRoot/checkpoints_A_mobile_colocated.json"
-$CheckpointBPath = "$OutputRoot/checkpoints_B_desktop_separated.json"
-$CheckpointA | ConvertTo-Json | Set-Content -LiteralPath $CheckpointAPath -Encoding UTF8
-$CheckpointB | ConvertTo-Json | Set-Content -LiteralPath $CheckpointBPath -Encoding UTF8
 
-Write-Host "=== [6/8] Compare both policies on the same frozen test split ===" -ForegroundColor Cyan
-Invoke-Uv -Arguments @(
-  "run", "--extra", "training", "python", "$StudyDir/offline_compare.py",
-  "--checkpoints_a_json", $CheckpointAPath, "--repo_a", $RunA.dataset_repo_id,
-  "--checkpoints_b_json", $CheckpointBPath, "--repo_b", $RunB.dataset_repo_id,
-  "--protocol_config", $Config, "--split_manifest", $SplitManifest, "--split", "test",
-  "--out", "$OutputRoot/offline_action_errors.csv", "--device", $RunA.device,
-  "--video_backend", $RunA.video_backend
-)
-
-Write-Host "=== [7/8] Extract and compare participant-level demonstration features ===" -ForegroundColor Cyan
-$LabelsA = "$OutputRoot/labels_A_mobile_colocated.csv"
-$LabelsB = "$OutputRoot/labels_B_desktop_separated.csv"
-$SplitRows | Where-Object { $_.condition -eq $ConditionA } | Export-Csv -LiteralPath $LabelsA -NoTypeInformation
-$SplitRows | Where-Object { $_.condition -eq $ConditionB } | Export-Csv -LiteralPath $LabelsB -NoTypeInformation
-$FeaturesA = "$OutputRoot/features_A_mobile_colocated.csv"
-$FeaturesB = "$OutputRoot/features_B_desktop_separated.csv"
-Invoke-Uv -Arguments @(
-  "run", "--extra", "training", "python", "$StudyDir/feature_extraction.py",
-  "--repo_id", $RunA.dataset_repo_id, "--condition", $ConditionA,
-  "--labels_csv", $LabelsA, "--out", $FeaturesA, "--video_backend", $RunA.video_backend
-)
-Invoke-Uv -Arguments @(
-  "run", "--extra", "training", "python", "$StudyDir/feature_extraction.py",
-  "--repo_id", $RunB.dataset_repo_id, "--condition", $ConditionB,
-  "--labels_csv", $LabelsB, "--out", $FeaturesB, "--video_backend", $RunB.video_backend
-)
+Write-Host "=== [6/8] Extract and compare all valid human demonstrations ===" -ForegroundColor Cyan
+foreach ($Condition in $Conditions) {
+  $LabelsPath = "$OutputRoot/labels_${Condition}.csv"
+  $SelectionRows | Where-Object { $_.condition -eq $Condition } |
+    Export-Csv -LiteralPath $LabelsPath -NoTypeInformation
+  $DatasetId = Get-DatasetId -Protocol $Protocol -Condition $Condition
+  Invoke-Uv -Arguments @(
+    "run", "--extra", "training", "python", "$StudyDir/feature_extraction.py",
+    "--repo_id", $DatasetId, "--condition", $Condition,
+    "--labels_csv", $LabelsPath, "--out", "$OutputRoot/features_${Condition}.csv",
+    "--video_backend", "pyav"
+  )
+}
 Invoke-Uv -Arguments @(
   "run", "--extra", "training", "python", "$StudyDir/features_compare.py",
-  "--features_a", $FeaturesA, "--features_b", $FeaturesB,
+  "--features_a", "$OutputRoot/features_A_mobile_colocated.csv",
+  "--features_b", "$OutputRoot/features_B_desktop_separated.csv",
   "--out", "$OutputRoot/feature_comparison.csv",
   "--excel", "$OutputRoot/feature_comparison.xlsx"
+)
+
+Write-Host "=== [7/8] Freeze the 240-trial primary rollout schedule ===" -ForegroundColor Cyan
+$RolloutManifest = "$OutputRoot/rollout_manifest_${PrimaryFamily}.csv"
+Invoke-Uv -Arguments @(
+  "run", "--extra", "training", "python", "$StudyDir/make_rollout_manifest.py",
+  "--config", $Config, "--out", $RolloutManifest, "--policy_family", $PrimaryFamily
 )
 
 Write-Host "=== [8/8] Run the shared real-robot rollout suite ===" -ForegroundColor Cyan
 if (-not $RolloutScript) {
   throw (
     "Offline stages completed, but formal evidence is incomplete. Supply -RolloutScript " +
-    "with the hardware-specific shared-suite adapter; offline loss/MSE cannot replace rollout."
+    "with the hardware-specific short-horizon adapter; offline metrics cannot replace rollout."
   )
 }
 if (-not (Test-Path -LiteralPath $RolloutScript -PathType Leaf)) {
   throw "Rollout adapter does not exist: $RolloutScript"
 }
-& $RolloutScript --config $Config --split_manifest $SplitManifest `
-  --checkpoints_a_json $CheckpointAPath --checkpoints_b_json $CheckpointBPath `
-  --output_dir "$OutputRoot/rollout" @RolloutArguments
-if (-not $?) {
-  throw "Rollout adapter failed"
+$CheckpointAKey = "${PrimaryFamily}|A_mobile_colocated"
+$CheckpointBKey = "${PrimaryFamily}|B_desktop_separated"
+if (-not $CheckpointFiles.ContainsKey($CheckpointAKey) -or -not $CheckpointFiles.ContainsKey($CheckpointBKey)) {
+  throw "Primary checkpoint maps are missing for $PrimaryFamily"
 }
+& $RolloutScript --config $Config --rollout_manifest $RolloutManifest `
+  --checkpoints_a_json $CheckpointFiles[$CheckpointAKey] `
+  --checkpoints_b_json $CheckpointFiles[$CheckpointBKey] `
+  --output_dir "$OutputRoot/rollout" @RolloutArguments
+if (-not $?) { throw "Rollout adapter failed" }
+$RolloutResults = "$OutputRoot/rollout/rollout_results.csv"
+if (-not (Test-Path -LiteralPath $RolloutResults -PathType Leaf)) {
+  throw "Rollout adapter must write the completed frozen table to $RolloutResults"
+}
+Invoke-Uv -Arguments @(
+  "run", "--extra", "training", "python", "$StudyDir/analyze_rollouts.py",
+  "--results", $RolloutResults, "--out_dir", "$OutputRoot/rollout/analysis",
+  "--expected_seeds", (($Protocol.training.random_seeds | ForEach-Object { [string]$_ }) -join ",")
+)
 
-Write-Host "=== Formal wrist-view presentation pipeline finished ===" -ForegroundColor Green
+Write-Host "=== Formal two-task wrist-view presentation pipeline finished ===" -ForegroundColor Green

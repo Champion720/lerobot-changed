@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Time-synchronize the three capture streams (experiment plan section 4) into aligned episodes.
+"""Time-synchronize robot, action, gripper, and video streams into aligned episodes.
 
 The robot, camera and phone each run on their own clock/rate. This resamples all three onto
 a common time grid so every output frame has a matching joint state, phone command and camera
@@ -11,6 +11,9 @@ INPUT  (one folder per episode, each stream timestamped in SECONDS):
         phone.csv        # audit stream: every received phone delta, including rejected input
         applied_actions.csv
                          # timestamp,dx,dy,dz,dyaw,dpitch,droll; accepted/applied deltas only
+        gripper_actions.csv  # timestamp,<frozen target column>; zero-order held
+        gripper_states.csv   # timestamp,<frozen measured-state column>; linearly interpolated
+        gripper_schema.json  # exact per-episode copy of the frozen protocol contract
         video.mp4        # camera recording (current A/B experiment: present in both conditions)
         video_meta.json  # formal runs: {"frame_timestamps_s":[absolute timestamp per frame], ...}
 
@@ -18,6 +21,7 @@ OUTPUT (ready for the converter):
     <aligned>/episode_000/
         states.csv   # timestamp,j1..jN   (robot, linearly interpolated to the grid)
         actions.csv  # timestamp,dx..droll (ordered SE(3) composition in each output interval)
+        gripper_actions.csv / gripper_states.csv / gripper_schema.json
         video.mp4    # one camera frame per grid point (nearest in time)
 
 Resampling: robot state = linear interpolation; accepted phone increments are composed in
@@ -39,10 +43,20 @@ import json
 import math
 import shutil
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
+
+try:
+    from .gripper_contract import load_and_validate_schema, normalize_gripper_contract, validate_values
+except ImportError:  # Direct script execution.
+    from gripper_contract import (  # type: ignore[no-redef]
+        load_and_validate_schema,
+        normalize_gripper_contract,
+        validate_values,
+    )
 
 ACTION_COLUMNS = ["dx", "dy", "dz", "dyaw", "dpitch", "droll"]
 FrameName = Literal["base", "tool"]
@@ -494,6 +508,18 @@ def _interp(t_grid: np.ndarray, t: np.ndarray, vals: np.ndarray) -> np.ndarray:
     return np.stack([np.interp(t_grid, t, vals[:, d]) for d in range(vals.shape[1])], axis=1)
 
 
+def _zero_order_hold(t_grid: np.ndarray, timestamps: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """Resample persistent commands without inventing intermediate gripper positions."""
+    if timestamps.ndim != 1 or values.ndim != 2 or len(timestamps) != len(values):
+        raise ValueError("zero-order hold inputs must have shapes (T,) and (T,D)")
+    if len(timestamps) == 0 or timestamps[0] > t_grid[0]:
+        raise ValueError("gripper action stream needs an initial command at or before the first grid point")
+    indices = np.searchsorted(timestamps, t_grid, side="right") - 1
+    if (indices < 0).any():
+        raise ValueError("gripper action stream does not cover the output grid start")
+    return values[indices]
+
+
 def _rotation_zyx(yaw: float, pitch: float, roll: float) -> np.ndarray:
     """Return a ZYX yaw/pitch/roll rotation matrix."""
 
@@ -760,6 +786,7 @@ def sync_episode(
     max_rotation_step_rad: float | None = None,
     max_translation_velocity_m_s: float | None = None,
     max_rotation_velocity_rad_s: float | None = None,
+    gripper_contract: Mapping[str, object] | None = None,
 ) -> None:
     ep_in = Path(ep_in)
     ep_out = Path(ep_out)
@@ -803,8 +830,11 @@ def sync_episode(
         "max_rotation_velocity_rad_s",
     )
 
+    normalized_gripper = normalize_gripper_contract(gripper_contract) if gripper_contract is not None else None
     has_video = (ep_in / "video.mp4").is_file()
     input_names = ["robot.csv", "phone.csv", "applied_actions.csv"]
+    if normalized_gripper is not None:
+        input_names.extend(["gripper_actions.csv", "gripper_states.csv", "gripper_schema.json"])
     if has_video:
         input_names.append("video.mp4")
         if (ep_in / "video_meta.json").is_file():
@@ -833,6 +863,7 @@ def sync_episode(
             max_rotation_step_rad=max_rotation_step_rad,
             max_translation_velocity_m_s=max_translation_velocity_m_s,
             max_rotation_velocity_rad_s=max_rotation_velocity_rad_s,
+            gripper_contract=normalized_gripper,
         )
     finally:
         _cleanup_owned_input_snapshot(snapshot_owner)
@@ -853,6 +884,7 @@ def _sync_episode_from_snapshot(
     max_rotation_step_rad: float | None,
     max_translation_velocity_m_s: float | None,
     max_rotation_velocity_rad_s: float | None,
+    gripper_contract: Mapping[str, object] | None,
 ) -> None:
     """Synchronize exclusively from an already verified process-owned snapshot."""
 
@@ -869,10 +901,43 @@ def _sync_episode_from_snapshot(
             f"{applied_path}: action columns must be exactly {ACTION_COLUMNS} in this order; got {phone_cols}"
         )
 
+    gripper_action_t = gripper_action_v = gripper_state_t = gripper_state_v = None
+    gripper_action_column = gripper_state_column = None
+    if gripper_contract is not None:
+        load_and_validate_schema(ep_in / "gripper_schema.json", gripper_contract)
+        gripper_action_t, gripper_action_v, action_columns = _read_ts_csv(
+            ep_in / "gripper_actions.csv"
+        )
+        gripper_state_t, gripper_state_v, state_columns = _read_ts_csv(ep_in / "gripper_states.csv")
+        gripper_action_column = str(gripper_contract["action_column"])
+        gripper_state_column = str(gripper_contract["state_column"])
+        if action_columns != [gripper_action_column]:
+            raise ValueError(
+                f"gripper_actions.csv value column must be exactly {gripper_action_column!r}"
+            )
+        if state_columns != [gripper_state_column]:
+            raise ValueError(f"gripper_states.csv value column must be exactly {gripper_state_column!r}")
+        validate_values(
+            gripper_action_v,
+            gripper_contract,
+            stream="action",
+            label="gripper_actions.csv",
+        )
+        validate_values(
+            gripper_state_v,
+            gripper_contract,
+            stream="state",
+            label="gripper_states.csv",
+        )
+
     starts = [robot_t[0], phone_t[0]]
     # Phone rows are instantaneous increments rather than a continuously sampled
     # stream. Their last timestamp therefore does not define episode coverage.
     ends = [robot_t[-1]]
+    if gripper_contract is not None:
+        assert gripper_action_t is not None and gripper_state_t is not None
+        starts.extend([gripper_action_t[0], gripper_state_t[0]])
+        ends.append(gripper_state_t[-1])
 
     if has_video:
         frame_count = _count_decodable_frames(ep_in / "video.mp4")
@@ -918,6 +983,13 @@ def _sync_episode_from_snapshot(
         max_translation_velocity_m_s=max_translation_velocity_m_s,
         max_rotation_velocity_rad_s=max_rotation_velocity_rad_s,
     )
+    if gripper_contract is not None:
+        assert gripper_action_t is not None and gripper_action_v is not None
+        assert gripper_state_t is not None and gripper_state_v is not None
+        gripper_actions = _zero_order_hold(t_grid, gripper_action_t, gripper_action_v)
+        gripper_states = _interp(t_grid, gripper_state_t, gripper_state_v)
+    else:
+        gripper_actions = gripper_states = None
     nearest = _nearest_indices(vid_t, t_grid) if has_video else None
 
     ep_out.parent.mkdir(parents=True, exist_ok=True)
@@ -944,6 +1016,18 @@ def _sync_episode_from_snapshot(
             np.column_stack([t_grid, actions]),
             columns=["timestamp", *phone_cols],
         ).to_csv(staging / "actions.csv", index=False)
+        if gripper_contract is not None:
+            assert gripper_actions is not None and gripper_states is not None
+            assert gripper_action_column is not None and gripper_state_column is not None
+            pd.DataFrame(
+                np.column_stack([t_grid, gripper_actions]),
+                columns=["timestamp", gripper_action_column],
+            ).to_csv(staging / "gripper_actions.csv", index=False)
+            pd.DataFrame(
+                np.column_stack([t_grid, gripper_states]),
+                columns=["timestamp", gripper_state_column],
+            ).to_csv(staging / "gripper_states.csv", index=False)
+            shutil.copyfile(ep_in / "gripper_schema.json", staging / "gripper_schema.json")
         (staging / "source_fingerprints.json").write_text(
             json.dumps(
                 {
@@ -965,6 +1049,14 @@ def _sync_episode_from_snapshot(
         ]
         if has_video:
             required_outputs.append(staging / "video.mp4")
+        if gripper_contract is not None:
+            required_outputs.extend(
+                [
+                    staging / "gripper_actions.csv",
+                    staging / "gripper_states.csv",
+                    staging / "gripper_schema.json",
+                ]
+            )
         if any(not path.is_file() or path.stat().st_size == 0 for path in required_outputs):
             raise RuntimeError(f"{source_episode_name}: staging output verification failed")
         if ep_out.exists() or ep_out.is_symlink():
@@ -1051,7 +1143,20 @@ def main() -> None:
         required=True,
         help=("Verified robot bridge JSON supplying translation/rotation frames and per-step safety limits."),
     )
+    parser.add_argument(
+        "--protocol_config",
+        default=None,
+        help="Protocol-v2 JSON; when supplied, gripper files are mandatory and synchronized.",
+    )
     args = parser.parse_args()
+
+    gripper_contract = None
+    if args.protocol_config:
+        try:
+            protocol = json.loads(Path(args.protocol_config).read_text(encoding="utf-8"))
+            gripper_contract = normalize_gripper_contract(protocol["capture"]["gripper"])
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"Invalid --protocol_config gripper contract: {exc}") from exc
 
     in_dir, out_dir = Path(args.in_dir), Path(args.out_dir)
     if not in_dir.is_dir():
@@ -1080,9 +1185,10 @@ def main() -> None:
     if not eps:
         raise SystemExit(f"No episode_* folders with robot.csv under {in_dir}")
     for ep in eps:
-        missing = [
-            name for name in ("robot.csv", "phone.csv", "applied_actions.csv") if not (ep / name).is_file()
-        ]
+        required = ["robot.csv", "phone.csv", "applied_actions.csv"]
+        if gripper_contract is not None:
+            required.extend(["gripper_actions.csv", "gripper_states.csv", "gripper_schema.json"])
+        missing = [name for name in required if not (ep / name).is_file()]
         if missing:
             raise SystemExit(f"{ep}: missing required file(s): {', '.join(missing)}")
     out_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -1107,6 +1213,7 @@ def main() -> None:
                 max_rotation_step_rad=max_rotation_step_rad,
                 max_translation_velocity_m_s=max_translation_velocity_m_s,
                 max_rotation_velocity_rad_s=max_rotation_velocity_rad_s,
+                gripper_contract=gripper_contract,
             )
         if out_dir.exists() or out_dir.is_symlink():
             raise FileExistsError(

@@ -23,6 +23,7 @@ def _load_script(name: str):
 
 
 forward_kinematics = _load_script("forward_kinematics")
+gripper_contract = _load_script("gripper_contract")
 time_sync = _load_script("time_sync")
 convert_raw = _load_script("convert_raw_to_lerobot")
 
@@ -837,3 +838,62 @@ def test_empty_video_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="could not open|no frames"):
         convert_raw.read_video(path, None)
+
+
+def test_sync_episode_resamples_gripper_target_with_zero_order_hold(tmp_path: Path) -> None:
+    episode_in = tmp_path / "episode_000"
+    episode_out = tmp_path / "aligned" / "episode_000"
+    episode_in.mkdir()
+    pd.DataFrame(
+        {"timestamp": [0.0, 0.5, 1.0], "joint_1": [0.0, 1.0, 2.0]}
+    ).to_csv(episode_in / "robot.csv", index=False)
+    actions = pd.DataFrame(
+        {
+            "timestamp": [0.0, 0.5],
+            "dx": [0.0, 0.0],
+            "dy": [0.0, 0.0],
+            "dz": [0.0, 0.0],
+            "dyaw": [0.0, 0.0],
+            "dpitch": [0.0, 0.0],
+            "droll": [0.0, 0.0],
+        }
+    )
+    actions.to_csv(episode_in / "phone.csv", index=False)
+    actions.to_csv(episode_in / "applied_actions.csv", index=False)
+    pd.DataFrame(
+        {"timestamp": [0.0, 0.6], "gripper_target": [0.0, 1.0]}
+    ).to_csv(episode_in / "gripper_actions.csv", index=False)
+    pd.DataFrame(
+        {"timestamp": [0.0, 0.5, 1.0], "gripper_position": [0.0, 0.4, 1.0]}
+    ).to_csv(episode_in / "gripper_states.csv", index=False)
+    contract = {
+        "action_schema_id": "test.target",
+        "action_unit": "normalized",
+        "action_column": "gripper_target",
+        "state_schema_id": "test.position",
+        "state_unit": "normalized",
+        "state_column": "gripper_position",
+        "action_open_value": 0.0,
+        "action_closed_value": 1.0,
+        "state_open_value": 0.0,
+        "state_closed_value": 1.0,
+    }
+    (episode_in / "gripper_schema.json").write_text(
+        json.dumps(gripper_contract.expected_schema(contract)),
+        encoding="utf-8",
+    )
+
+    time_sync.sync_episode(
+        episode_in,
+        episode_out,
+        out_fps=4,
+        gripper_contract=contract,
+    )
+
+    gripper_actions = pd.read_csv(episode_out / "gripper_actions.csv")
+    gripper_states = pd.read_csv(episode_out / "gripper_states.csv")
+    assert gripper_actions["gripper_target"].tolist() == [0.0, 0.0, 0.0, 1.0]
+    assert gripper_states["gripper_position"].tolist() == pytest.approx([0.0, 0.2, 0.4, 0.7])
+    assert json.loads((episode_out / "gripper_schema.json").read_text()) == gripper_contract.expected_schema(
+        contract
+    )

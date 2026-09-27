@@ -7,10 +7,10 @@ paired by default. Independent-samples tests are available only through the expl
 ``--independent_diagnostic`` switch and must not be reported as the formal study result.
 Binary episode outcomes follow the same paired/diagnostic design choice.
 
-When ``difficulty`` is present, the script fits an effect-coded condition x difficulty
-factorial OLS model with ``condition_order`` adjustment. Episode repeats are averaged to
-participant-condition-difficulty cells and participant fixed effects are included. This is
-a transparent repeated-measures approximation using NumPy/SciPy, not a full mixed model.
+For protocol v2, the script fits an effect-coded condition x task factorial OLS model with
+``condition_order`` adjustment. Episode repeats are averaged to participant-condition-task
+cells and participant fixed effects are included. This is a transparent repeated-measures
+approximation using NumPy/SciPy, not a full mixed model.
 """
 
 from __future__ import annotations
@@ -44,7 +44,6 @@ NON_FEATURE = {
     "n_frames",
     "success",
     "failure_type",
-    "difficulty",
     "condition",
     "display",
     "split",
@@ -65,18 +64,6 @@ NON_FEATURE = {
     "raw_duration_s",
     "seed",
 }
-PAIR_KEY_CANDIDATES = (
-    "pair_id",
-    "participant_id",
-    "participant",
-    "task_id",
-    "task",
-    "difficulty",
-    "trial_index",
-    "trial",
-    "repetition",
-    "session",
-)
 MISSING_IDENTIFIER_TOKENS = {"", "nan", "none", "<na>", "null"}
 
 
@@ -188,18 +175,39 @@ def _paired_ttest(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
     return float(result.statistic), float(result.pvalue)
 
 
+def _mean_ci95(values: np.ndarray) -> tuple[float, float]:
+    """Return a descriptive two-sided 95% t interval for one mean."""
+    values = np.asarray(values, dtype=float)
+    if len(values) < 2:
+        return float("nan"), float("nan")
+    mean = float(values.mean())
+    standard_error = float(values.std(ddof=1) / np.sqrt(len(values)))
+    if np.isclose(standard_error, 0.0):
+        return mean, mean
+    margin = float(stats.t.ppf(0.975, len(values) - 1) * standard_error)
+    return mean - margin, mean + margin
+
+
+def _welch_mean_difference_ci95(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
+    """Return a two-sided Welch 95% interval for mean(A)-mean(B)."""
+    difference = float(a.mean() - b.mean())
+    variance_a = float(a.var(ddof=1) / len(a))
+    variance_b = float(b.var(ddof=1) / len(b))
+    standard_error_squared = variance_a + variance_b
+    if np.isclose(standard_error_squared, 0.0):
+        return difference, difference
+    denominator = variance_a**2 / (len(a) - 1) + variance_b**2 / (len(b) - 1)
+    degrees_of_freedom = standard_error_squared**2 / denominator
+    margin = float(stats.t.ppf(0.975, degrees_of_freedom) * np.sqrt(standard_error_squared))
+    return difference - margin, difference + margin
+
+
 def validate_condition_table(
     dataframe: pd.DataFrame,
     expected_condition: str,
 ) -> None:
     """Reject mislabeled/swapped inputs instead of overwriting their condition."""
-    required = {
-        "condition",
-        "participant_id",
-        "success",
-        "difficulty",
-        "condition_order",
-    }
+    required = {"condition", "participant_id", "success", "condition_order", "task_id"}
     missing = sorted(required - set(dataframe.columns))
     if missing:
         raise ValueError(f"{expected_condition} table is missing columns: {missing}")
@@ -232,7 +240,7 @@ def aggregate_participant_features(
     dataframe: pd.DataFrame,
     features: list[str],
 ) -> pd.DataFrame:
-    """Average episodes within participant/seed, then seeds within participant."""
+    """Give tasks equal weight, then average seeds within each participant."""
     group_columns = ["participant_id"]
     if "seed" in dataframe.columns:
         seed_values = dataframe["seed"]
@@ -242,7 +250,17 @@ def aggregate_participant_features(
         ):
             raise ValueError("seed must be populated for all rows when present")
         group_columns.append("seed")
-    seed_level = dataframe.groupby(group_columns, as_index=False, observed=True)[features].mean()
+    if "task_id" in dataframe.columns:
+        task_levels = set(dataframe["task_id"].astype(str).unique())
+        task_counts = dataframe.groupby(group_columns, observed=True)["task_id"].nunique()
+        if not task_counts.eq(len(task_levels)).all():
+            raise ValueError("every participant/seed must contain every task before equal-task aggregation")
+        task_level = dataframe.groupby(
+            [*group_columns, "task_id"], as_index=False, observed=True
+        )[features].mean()
+        seed_level = task_level.groupby(group_columns, as_index=False, observed=True)[features].mean()
+    else:
+        seed_level = dataframe.groupby(group_columns, as_index=False, observed=True)[features].mean()
     participant_level = seed_level.groupby("participant_id", as_index=False, observed=True)[features].mean()
     if len(participant_level) < 2:
         raise ValueError(
@@ -277,6 +295,7 @@ def continuous_comparison(
             effect_size = cohens_dz(a, b)
             test_name = "paired_t"
             n_pairs: int | float = len(a)
+            ci_low, ci_high = _mean_ci95(a - b)
         else:
             a = df_a[feature].dropna().to_numpy(dtype=float)
             b = df_b[feature].dropna().to_numpy(dtype=float)
@@ -289,6 +308,7 @@ def continuous_comparison(
             effect_size = cohens_d(a, b)
             test_name = "welch_t"
             n_pairs = np.nan
+            ci_low, ci_high = _welch_mean_difference_ci95(a, b)
 
         rows.append(
             {
@@ -302,6 +322,8 @@ def continuous_comparison(
                 "B_mean": b.mean(),
                 "B_std": b.std(ddof=1),
                 "diff_A_minus_B": a.mean() - b.mean(),
+                "diff_ci95_low": ci_low,
+                "diff_ci95_high": ci_high,
                 "t": statistic,
                 "p": p_value,
                 "effect_size": effect_size,
@@ -331,70 +353,6 @@ def _binary_success(series: pd.Series, condition: str) -> pd.Series:
     return values.astype(int)
 
 
-def success_comparison(
-    df_a: pd.DataFrame,
-    df_b: pd.DataFrame,
-    *,
-    paired: bool = False,
-    pair_keys: list[str] | None = None,
-) -> dict[str, object] | None:
-    """Compare success using Fisher exact (independent) or exact McNemar (paired)."""
-    if "success" not in df_a.columns or "success" not in df_b.columns:
-        return None
-    if paired:
-        keys = pair_keys or []
-        _validate_pair_keys(df_a, df_b, keys)
-        merged = df_a[keys + ["success"]].merge(
-            df_b[keys + ["success"]],
-            on=keys,
-            how="inner",
-            suffixes=("_A", "_B"),
-            validate="one_to_one",
-        )
-        if len(merged) != len(df_a) or len(merged) != len(df_b):
-            raise ValueError(
-                "internal paired merge mismatch; refusing to calculate McNemar on different A/B sample counts"
-            )
-        a = _binary_success(merged["success_A"], "A")
-        b = _binary_success(merged["success_B"], "B")
-        if len(a) != len(b) or len(a) != len(merged):
-            raise ValueError("McNemar requires one complete A/B success outcome per pair")
-        if len(a) == 0:
-            return None
-        a_only = int(((a == 1) & (b == 0)).sum())
-        b_only = int(((a == 0) & (b == 1)).sum())
-        discordant = a_only + b_only
-        p_value = stats.binomtest(a_only, n=discordant, p=0.5).pvalue if discordant else 1.0
-        return {
-            "test": "exact_mcnemar",
-            "SR_A": float(a.mean()),
-            "SR_B": float(b.mean()),
-            "n_a": len(a),
-            "n_b": len(b),
-            "n_pairs": len(a),
-            "A_success_B_failure": a_only,
-            "A_failure_B_success": b_only,
-            "p": float(p_value),
-        }
-
-    a = _binary_success(df_a["success"], "A")
-    b = _binary_success(df_b["success"], "B")
-    if len(a) == 0 or len(b) == 0:
-        return None
-    success_a, success_b = int(a.sum()), int(b.sum())
-    table = [[success_a, len(a) - success_a], [success_b, len(b) - success_b]]
-    _, p_value = stats.fisher_exact(table)
-    return {
-        "test": "fisher_exact",
-        "SR_A": success_a / len(a),
-        "SR_B": success_b / len(b),
-        "n_a": len(a),
-        "n_b": len(b),
-        "n_pairs": np.nan,
-        "p": float(p_value),
-    }
-
-
 def participant_success_comparison(
     df_a: pd.DataFrame,
     df_b: pd.DataFrame,
@@ -418,11 +376,18 @@ def participant_success_comparison(
             ):
                 raise ValueError("seed must be populated for all success rows")
             columns.append("seed")
-        seed_rates = (
-            dataframe.assign(success=pd.to_numeric(dataframe["success"]))
-            .groupby(columns, as_index=False, observed=True)["success"]
-            .mean()
-        )
+        normalized = dataframe.assign(success=pd.to_numeric(dataframe["success"]))
+        if "task_id" in normalized.columns:
+            task_levels = set(normalized["task_id"].astype(str).unique())
+            task_counts = normalized.groupby(columns, observed=True)["task_id"].nunique()
+            if not task_counts.eq(len(task_levels)).all():
+                raise ValueError("every participant/seed must contain every task for success aggregation")
+            task_rates = normalized.groupby(
+                [*columns, "task_id"], as_index=False, observed=True
+            )["success"].mean()
+            seed_rates = task_rates.groupby(columns, as_index=False, observed=True)["success"].mean()
+        else:
+            seed_rates = normalized.groupby(columns, as_index=False, observed=True)["success"].mean()
         return seed_rates.groupby("participant_id", as_index=False, observed=True)["success"].mean()
 
     rates_a, rates_b = participant_rates(df_a), participant_rates(df_b)
@@ -430,6 +395,10 @@ def participant_success_comparison(
         if len(rates_a) < 2 or len(rates_b) < 2:
             raise ValueError("independent success diagnostic requires at least 2 participants per condition")
         result = stats.ttest_ind(rates_a["success"], rates_b["success"], equal_var=False)
+        ci_low, ci_high = _welch_mean_difference_ci95(
+            rates_a["success"].to_numpy(dtype=float),
+            rates_b["success"].to_numpy(dtype=float),
+        )
         return {
             "test": "participant_welch_t_diagnostic",
             "SR_A": float(rates_a["success"].mean()),
@@ -437,6 +406,9 @@ def participant_success_comparison(
             "n_a": len(rates_a),
             "n_b": len(rates_b),
             "n_pairs": np.nan,
+            "SR_A_minus_B": float(rates_a["success"].mean() - rates_b["success"].mean()),
+            "diff_ci95_low": ci_low,
+            "diff_ci95_high": ci_high,
             "p": float(result.pvalue),
             "limitation": (
                 "Diagnostic independent-samples comparison of participant success "
@@ -462,6 +434,7 @@ def participant_success_comparison(
         validate="one_to_one",
     )
     differences = matched["success_A"] - matched["success_B"]
+    ci_low, ci_high = _mean_ci95(differences.to_numpy(dtype=float))
     nonzero = differences[~np.isclose(differences, 0)]
     positive = int((nonzero > 0).sum())
     p_value = float(stats.binomtest(positive, n=len(nonzero), p=0.5).pvalue) if len(nonzero) else 1.0
@@ -472,6 +445,9 @@ def participant_success_comparison(
         "n_a": len(matched),
         "n_b": len(matched),
         "n_pairs": len(matched),
+        "SR_A_minus_B": float(differences.mean()),
+        "diff_ci95_low": ci_low,
+        "diff_ci95_high": ci_high,
         "n_discordant_participants": len(nonzero),
         "p": p_value,
         "limitation": (
@@ -496,9 +472,10 @@ def _effect_codes(values: pd.Series) -> tuple[np.ndarray, list[object]]:
 def _factorial_design(
     frame: pd.DataFrame,
     subject_key: str | None,
+    factor_column: str = "task_id",
 ) -> tuple[np.ndarray, dict[str, list[int]], dict[str, list[object]]]:
     condition_codes, condition_levels = _effect_codes(frame["condition"])
-    difficulty_codes, difficulty_levels = _effect_codes(frame["difficulty"])
+    factor_codes, factor_levels = _effect_codes(frame[factor_column])
     parts = [np.ones((len(frame), 1), dtype=float)]
     offset = 1
 
@@ -520,17 +497,17 @@ def _factorial_design(
     parts.append(condition_codes)
     terms["condition"] = list(range(offset, offset + condition_codes.shape[1]))
     offset += condition_codes.shape[1]
-    parts.append(difficulty_codes)
-    terms["difficulty"] = list(range(offset, offset + difficulty_codes.shape[1]))
-    offset += difficulty_codes.shape[1]
+    parts.append(factor_codes)
+    terms[factor_column] = list(range(offset, offset + factor_codes.shape[1]))
+    offset += factor_codes.shape[1]
 
-    interaction = (condition_codes[:, :, None] * difficulty_codes[:, None, :]).reshape(len(frame), -1)
+    interaction = (condition_codes[:, :, None] * factor_codes[:, None, :]).reshape(len(frame), -1)
     parts.append(interaction)
-    terms["condition:difficulty"] = list(range(offset, offset + interaction.shape[1]))
+    terms[f"condition:{factor_column}"] = list(range(offset, offset + interaction.shape[1]))
     return (
         np.concatenate(parts, axis=1),
         terms,
-        {"condition": condition_levels, "difficulty": difficulty_levels},
+        {"condition": condition_levels, factor_column: factor_levels},
     )
 
 
@@ -560,25 +537,26 @@ def _partial_f_test(
     return statistic, p_value, numerator_df, int(denominator_df)
 
 
-def factorial_condition_difficulty(
+def factorial_condition_factor(
     dataframe: pd.DataFrame,
     features: list[str],
     *,
     subject_key: str | None = None,
+    factor_column: str,
 ) -> pd.DataFrame:
-    """Fit condition x difficulty factorial models, optionally blocking by participant."""
-    if "condition" not in dataframe.columns or "difficulty" not in dataframe.columns:
+    """Fit a condition x task model, optionally blocking by participant."""
+    if "condition" not in dataframe.columns or factor_column not in dataframe.columns:
         return pd.DataFrame()
     if "condition_order" not in dataframe.columns:
-        raise ValueError("condition_order is required to adjust the condition x difficulty model")
-    if dataframe["condition"].nunique() < 2 or dataframe["difficulty"].nunique() < 2:
+        raise ValueError(f"condition_order is required to adjust condition x {factor_column}")
+    if dataframe["condition"].nunique() < 2 or dataframe[factor_column].nunique() < 2:
         return pd.DataFrame()
     if subject_key is not None and subject_key not in dataframe.columns:
         raise ValueError(f"subject key {subject_key!r} is absent from the feature tables")
 
     rows: list[dict[str, object]] = []
     for feature in features:
-        columns = ["condition", "difficulty", "condition_order", feature]
+        columns = ["condition", factor_column, "condition_order", feature]
         if subject_key is not None:
             columns.append(subject_key)
         has_seed = "seed" in dataframe.columns
@@ -588,12 +566,12 @@ def factorial_condition_difficulty(
         if subject_key is not None:
             # One value per repeated-measures cell prevents trials with more repetitions from
             # receiving disproportionate weight.
-            cell_keys = [subject_key, "condition", "difficulty"]
+            cell_keys = [subject_key, "condition", factor_column]
             seed_cell_keys = [*cell_keys, "seed"] if has_seed else cell_keys
             inconsistent_order = frame.groupby(seed_cell_keys, observed=True)["condition_order"].nunique() > 1
             if inconsistent_order.any():
                 raise ValueError(
-                    "condition_order must be constant within participant/condition/difficulty cells"
+                    f"condition_order must be constant within participant/condition/{factor_column} cells"
                 )
             frame = frame.groupby(seed_cell_keys, as_index=False, observed=True).agg(
                 {feature: "mean", "condition_order": "first"}
@@ -605,16 +583,16 @@ def factorial_condition_difficulty(
                 frame = frame.groupby(cell_keys, as_index=False, observed=True).agg(
                     {feature: "mean", "condition_order": "first"}
                 )
-        if frame["condition"].nunique() < 2 or frame["difficulty"].nunique() < 2:
+        if frame["condition"].nunique() < 2 or frame[factor_column].nunique() < 2:
             continue
-        design, terms, levels = _factorial_design(frame, subject_key)
+        design, terms, levels = _factorial_design(frame, subject_key, factor_column)
         response = frame[feature].to_numpy(dtype=float)
         for effect, columns_to_remove in terms.items():
             test = _partial_f_test(design, response, columns_to_remove)
             if test is None:
                 raise ValueError(
                     f"factorial effect {effect!r} is not estimable for feature "
-                    f"{feature!r}; check participant count, complete difficulty cells, "
+                    f"{feature!r}; check participant count, complete {factor_column} cells, "
                     "and counterbalanced condition_order"
                 )
             statistic, p_value, numerator_df, denominator_df = test
@@ -630,7 +608,7 @@ def factorial_condition_difficulty(
                     "subject_key": subject_key,
                     "n": len(frame),
                     "condition_levels": "/".join(map(str, levels["condition"])),
-                    "difficulty_levels": "/".join(map(str, levels["difficulty"])),
+                    f"{factor_column}_levels": "/".join(map(str, levels[factor_column])),
                     "F": statistic,
                     "df_num": numerator_df,
                     "df_den": denominator_df,
@@ -640,32 +618,19 @@ def factorial_condition_difficulty(
     return _add_fdr(pd.DataFrame(rows))
 
 
-def difficulty_anova(
+def factorial_condition_task(
     dataframe: pd.DataFrame,
     features: list[str],
+    *,
+    subject_key: str | None = None,
 ) -> pd.DataFrame:
-    """Legacy one-way helper retained for callers; main uses the factorial model."""
-    if "difficulty" not in dataframe.columns:
-        return pd.DataFrame()
-    groups = dict(dataframe.groupby("difficulty"))
-    if len(groups) < 2:
-        return pd.DataFrame()
-    rows = []
-    for feature in features:
-        samples = [group[feature].dropna().to_numpy(dtype=float) for group in groups.values()]
-        samples = [sample for sample in samples if len(sample) >= 2]
-        if len(samples) < 2:
-            continue
-        statistic, p_value = stats.f_oneway(*samples)
-        rows.append(
-            {
-                "feature": feature,
-                "F": statistic,
-                "p": p_value,
-                "levels": "/".join(map(str, groups)),
-            }
-        )
-    return _add_fdr(pd.DataFrame(rows))
+    """Protocol-v2 condition x task model."""
+    return factorial_condition_factor(
+        dataframe,
+        features,
+        subject_key=subject_key,
+        factor_column="task_id",
+    )
 
 
 def export_excel(
@@ -673,6 +638,7 @@ def export_excel(
     comparison: pd.DataFrame,
     success: dict[str, object] | None,
     factorial: pd.DataFrame,
+    factor_column: str = "task_id",
 ) -> None:
     """Write a readable, highlighted multi-sheet workbook."""
     from openpyxl.styles import Font, PatternFill
@@ -712,27 +678,15 @@ def export_excel(
         comparison.to_excel(writer, sheet_name="continuous", index=False)
         if success:
             pd.DataFrame([success]).to_excel(writer, sheet_name="success", index=False)
+        factorial_sheet = f"condition_x_{factor_column}"[:31]
         if len(factorial):
-            factorial.to_excel(writer, sheet_name="condition_x_difficulty", index=False)
+            factorial.to_excel(writer, sheet_name=factorial_sheet, index=False)
         if len(comparison):
             highlight(writer.sheets["continuous"], "significant", effect_column="effect_size")
         if "success" in writer.sheets:
             autosize(writer.sheets["success"])
         if len(factorial):
-            highlight(writer.sheets["condition_x_difficulty"], "significant")
-
-
-def _infer_pair_keys(df_a: pd.DataFrame, df_b: pd.DataFrame) -> list[str]:
-    if "pair_id" in df_a.columns and "pair_id" in df_b.columns:
-        return ["pair_id"]
-    return [key for key in PAIR_KEY_CANDIDATES if key in df_a.columns and key in df_b.columns]
-
-
-def _infer_subject_key(df_a: pd.DataFrame, df_b: pd.DataFrame) -> str | None:
-    for key in ("participant_id", "participant"):
-        if key in df_a.columns and key in df_b.columns:
-            return key
-    return None
+            highlight(writer.sheets[factorial_sheet], "significant")
 
 
 def main() -> None:
@@ -845,14 +799,20 @@ def main() -> None:
         )
 
     combined = pd.concat([df_a, df_b], ignore_index=True)
+    factor_column = "task_id"
     try:
-        factorial = factorial_condition_difficulty(combined, features, subject_key=subject_key)
+        factorial = factorial_condition_factor(
+            combined,
+            features,
+            subject_key=subject_key,
+            factor_column=factor_column,
+        )
     except ValueError as exc:
         raise SystemExit(f"Invalid factorial design: {exc}") from exc
     if len(factorial):
-        print("\n=== Condition x difficulty factorial model (FDR-corrected) ===")
+        print(f"\n=== Condition x {factor_column} factorial model (FDR-corrected) ===")
         print(
-            "Participant fixed effects use participant-level condition/difficulty cell "
+            f"Participant fixed effects use participant-level condition/{factor_column} cell "
             "means and adjust for condition_order; use a mixed-effects model for "
             "confirmatory inference if cells are substantially incomplete."
         )
@@ -875,7 +835,7 @@ def main() -> None:
     if args.excel:
         excel_path = Path(args.excel)
         excel_path.parent.mkdir(parents=True, exist_ok=True)
-        export_excel(str(excel_path), comparison, success, factorial)
+        export_excel(str(excel_path), comparison, success, factorial, factor_column)
         print(f"Wrote Excel workbook to {excel_path}")
 
     metadata_path = output.with_name(f"{output.stem}_metadata.json")
@@ -930,7 +890,7 @@ def main() -> None:
                 "alpha": 0.05,
                 "success_test": success["test"] if success else None,
             },
-            "factorial": "participant fixed effects + condition*difficulty + condition_order",
+            "factorial": f"participant fixed effects + condition*{factor_column} + condition_order",
             "success_test": success["test"] if success else None,
             "success_limitation": success.get("limitation") if success else None,
             "runtime": runtime_environment(),
